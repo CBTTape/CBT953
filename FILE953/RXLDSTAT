@@ -1,0 +1,352 @@
+ TITLE 'RXLDSTAT - Populate a STEM. with load library statistics'
+*______________________________________________________________________
+*
+RXLDSTAT PRGDEF  FSEG=MAIN_BIT,RMODE=24,REXX=Y
+*
+*  Written by John Gateley - use at your own risk
+*
+*  This program acts as a REXX function
+*
+*  It reads the directory of a load library and outputs the
+*  member statistics as a stem variable.
+*
+*  Example REXX call
+*
+*  RE_SULT = RXLDSTAT('SPURT.APF.LOADLIB','MY_STEM.')
+*  IF RE_SULT /= 0 THEN DO
+*     SAY RE_SULT
+*     EXIT
+*  END
+*
+*  SAY 'NUMBER OF MEMBERS ' MY_STEM.0
+*  DO LO_OP_R = 1 TO MY_STEM.0
+*     SAY  MY_STEM.LO_OP_R
+*  END
+*______________________________________________________________________
+*
+*  REENTRANT STORAGE
+*
+TTR_ADDR             DS    F
+LEN_STATS            DS    H
+ERR_NO               DS    CL1
+*
+DODYNPRC_PARM        DS    0D          parameter area for DODYNPRC
+DODYNPRC_ACTION      DS    CL1
+DODYNPRC_DDNAME      DS    CL8
+DODYNPRC_DATASET     DS    CL44
+DODYNPRC_MEMBER      DS    CL8
+                     DS    0H
+*
+        PRGEDEF
+        USING PDS2,R6
+        USING IHADCB,MEMLIST
+*______________________________________________________________________
+*
+ SEGS MAIN_BIT
+*
+   SEGDO GET_ARGUMENTS
+*
+   SEGDO DYNALLOC_A
+*
+   SEGDO PROCESS_MEMBERS
+*
+   SEGDO DYNALLOC_D
+*
+   MVI   EVALBLOCK_EVDATA,C' '
+   MVC   EVALBLOCK_EVDATA+1(80),EVALBLOCK_EVDATA
+   MVI   EVALBLOCK_EVDATA,C'0'         set result value
+   LA    R1,1
+   ST    R1,EVALBLOCK_EVLEN            set result length
+*
+ SEGE MAIN_BIT
+*______________________________________________________________________
+*
+ SEGS PROCESS_MEMBERS
+*
+   SEGDO OPEN_MEMLIST
+*
+   DO INF
+     GET   MEMLIST
+     LH    R3,0(R1)                    number of active bytes in block
+     LA    R3,0(R3,R1)                 point to end of block
+     LA    R6,2(0,R1)                  jump past length
+     DO INF
+     DOEXIT (CR,R6,GE,R3)              at end of the block
+     DOEXIT (CLC,0(8,R6),EQ,HIGHVALS)  end of directory
+     DOEXIT (CLC,0(8,R6),EQ,LOWVALS)   not wanted
+       L     R1,8(R6)
+       STCM  R1,B'1110',TTR_ADDR       track address of member
+       SLL   R1,27                     last byte contains length of
+       SRL   R1,26                     ..user data in halfwords so dump
+       STH   R1,LEN_STATS              ..the rest and make it bytes
+       SEGDO PROCESS_MEMBER_STATS
+       LA    R6,12(,R6)                add standard length
+       AH    R6,LEN_STATS              plus length of user stats
+     ENDDO
+   DOEXIT (CLC,0(8,R6),EQ,HIGHVALS)    thats all
+   ENDDO
+*
+ERR      DS    0H
+DIREND   DS    0H
+*
+   SEGDO CLOSE_MEMLIST
+*
+ SEGE PROCESS_MEMBERS
+*______________________________________________________________________
+*
+ SEGS PROCESS_MEMBER_STATS
+*
+   MVC   OUT_NAME,PDS2NAME
+   MVC   OUT_RENT,=C'  '               reentrant
+   MVC   OUT_REUS,=C'  '               reusable
+   MVC   OUT_LOAD,=C'  '               only loadable
+   MVC   OUT_EXEC,=C'  '               executable
+   MVI   OUT_AUTH,C'0'                 authorised
+   IF (TM,PDS2ATR1,PDS2RENT,NZ)
+     MVC   OUT_RENT,=C'RN'             reentrant
+   ENDIF
+   IF (TM,PDS2ATR1,PDS2REUS,NZ)
+     MVC   OUT_REUS,=C'RU'             reusable
+   ENDIF
+   IF (TM,PDS2ATR1,PDS2LOAD,NZ)
+     MVC   OUT_LOAD,=C'OL'             only loadable
+   ENDIF
+   IF (TM,PDS2ATR1,PDS2EXEC,Z)
+     MVC   OUT_EXEC,=C'NX'             executable
+   ENDIF
+   IF (TM,PDS2FTB2,BIT6,Z)             A24 OR A64
+     IF (TM,PDS2FTB2,BIT7,Z)           A24
+       MVC   OUT_AMOD,=C'A24'
+     ELSE
+       MVC   OUT_AMOD,=C'A64'
+     ENDIF
+   ELSE
+     IF (TM,PDS2FTB2,BIT7,Z)           A31
+       MVC   OUT_AMOD(3),=C'A31'
+     ELSE
+       MVC   OUT_AMOD(3),=C'ANY'
+     ENDIF
+   ENDIF
+   IF (TM,PDS2FTB2,PDSLRMOD,NZ)        R31
+     MVC   OUT_RMOD,=C'ANY'
+   ELSE
+     MVC   OUT_RMOD(3),=C'R24'
+   ENDIF
+   IF (TM,PDS2FTB1,PDSAPFLG,NZ)        is APF valid
+     LA    R14,PDSBCEND                point to normal end
+     IF (TM,PDS2ATR1,PDS2SCTR,NZ)      is scatter there
+       LA    R14,PDSS01LN(,R14)        add length
+     ENDIF
+     IF (TM,PDS2INDC,PDS2ALIS,NZ)      is alias there
+       LA    R14,PDSS02LN(,R14)        add length
+     ENDIF
+     IF (TM,PDS2FTB1,PDS2SSI,NZ)       is SSI there
+       LA    R14,PDSS03LN+1(,R14)      add length +1
+       SRL   R14,1                     ensure halfword aligned
+       SLL   R14,1
+     ENDIF
+     IF (TM,1(R14),1,NZ)
+       MVI   OUT_AUTH,C'1'             authorised
+     ENDIF
+   ENDIF
+*
+   LA    R14,OUT_NAME
+   LA    R15,OUT_LEN
+   ST    R14,THE_STEM_TEXT_ADR         store address
+   ST    R15,THE_STEM_TEXT_LEN         store length
+   MVHHI THE_STEM_FUNCTION,2           set STEM.STRING.? value
+   LA    R1,THE_STEM_AREA              point to PRGSTEM expansion
+   SEGDO CALL_PROCSTEM
+*
+   MVHHI THE_STEM_FUNCTION,3           set STEM.0 to total lines
+   LA    R1,THE_STEM_AREA
+   SEGDO CALL_PROCSTEM
+*
+ SEGE PROCESS_MEMBER_STATS
+*______________________________________________________________________
+*
+ SEGS OPEN_MEMLIST
+*
+   OPEN  (MEMLIST,INPUT)
+   IF (LTR,R15,R15,NZ)
+     SEGDO DYNALLOC_D
+     MVI   ERR_NO,8
+     SEGDO NOT_VALID
+   ENDIF
+*
+ SEGE OPEN_MEMLIST
+*______________________________________________________________________
+*
+ SEGS CLOSE_MEMLIST
+*
+   CLOSE MEMLIST
+*
+ SEGE CLOSE_MEMLIST
+*______________________________________________________________________
+*
+ SEGS GET_ARGUMENTS
+*
+   IF (CLC,ARGTABLE_ARGSTRING_PTR,EQ,=8X'FF')
+     MVI   ERR_NO,1
+     SEGDO NOT_VALID
+   ELSEIF (CLC,ARGTABLE_ARGSTRING_LENGTH,EQ,=F'0')
+     MVI   ERR_NO,2
+     SEGDO NOT_VALID
+   ELSEIF (CLC,ARGTABLE_ARGSTRING_LENGTH,GT,=F'44')
+     MVI   ERR_NO,3
+     SEGDO NOT_VALID
+   ENDIF
+   MVI   DODYNPRC_DATASET,C' '
+   MVC   DODYNPRC_DATASET+1(L'DODYNPRC_DATASET-1),DODYNPRC_DATASET
+   L     R14,ARGTABLE_ARGSTRING_PTR
+   L     R15,ARGTABLE_ARGSTRING_LENGTH
+   BCTR  R15,0
+   EX    R15,COPY_DSNAME
+*
+   LA    ARG_POINT,ARGTABLE_NEXT       check for second argument
+   IF (CLC,ARGTABLE_ARGSTRING_PTR,EQ,=8X'FF')
+     MVI   ERR_NO,4
+     SEGDO NOT_VALID
+   ELSEIF (CLC,ARGTABLE_ARGSTRING_LENGTH,EQ,=F'0')
+     MVI   ERR_NO,5
+     SEGDO NOT_VALID
+   ELSEIF (CLC,ARGTABLE_ARGSTRING_LENGTH,GT,=F'20')
+     MVI   ERR_NO,6                    arbitary limit
+     SEGDO NOT_VALID
+   ENDIF
+   MVC   THE_STEM_NAME_ADR,ARGTABLE_ARGSTRING_PTR
+   MVC   THE_STEM_NAME_LEN,ARGTABLE_ARGSTRING_LENGTH
+   L     R14,ARGTABLE_ARGSTRING_PTR
+   L     R15,ARGTABLE_ARGSTRING_LENGTH
+   BCTR  R15,0
+   LA    R14,0(R15,R14)
+   IF (CLI,0(R14),EQ,C'.')             ends in a dot
+     ST    R15,THE_STEM_NAME_LEN       remove it
+   ENDIF
+*
+   MVI   THE_STEM_TRIM_VAR,C'N'
+   MVHHI THE_STEM_FUNCTION,1           init STEM.0
+   SEGDO CALL_PROCSTEM
+*
+ SEGE GET_ARGUMENTS
+*______________________________________________________________________
+*
+ SEGS DYNALLOC_A
+*
+   MVI   DODYNPRC_ACTION,C'A'          dynamically allocate
+   MVC   DODYNPRC_DDNAME,=CL8'RXLD1234'
+   XC    DODYNPRC_MEMBER,DODYNPRC_MEMBER
+   LA    R1,DODYNPRC_PARM
+   ST    R1,MY_P_1
+   LA    R1,MY_PARM
+   L     R15,=V(DODYNPRC)
+   BASR  R14,R15
+   IF (CFI,R15,NE,0)
+     MVI   ERR_NO,7
+     SEGDO NOT_VALID
+   ENDIF
+*
+ SEGE DYNALLOC_A
+*______________________________________________________________________
+*
+ SEGS DYNALLOC_D
+*
+   MVI   DODYNPRC_ACTION,C'D'          dynamically de-allocate
+   LA    R1,DODYNPRC_PARM
+   ST    R1,MY_P_1
+   LA    R1,MY_PARM
+   L     R15,=V(DODYNPRC)
+   BASR  R14,R15
+*
+ SEGE DYNALLOC_D
+*______________________________________________________________________
+*
+ SEGS CALL_PROCSTEM
+*
+   LA    R1,THE_STEM_AREA              point to PRGSTEM area INPUT
+   ST    R1,MY_P_1                     save as first parm
+   LA    R1,MY_PARM                    point to parameter list
+   L     R15,=V(PROCSTEM)              get program address
+   BASR  R14,R15                       go and set stem value
+   IF (LTR,R15,R15,NZ)                 error ?
+     ST    R15,R_C                     set return code
+     PRGQUIT                           QUIT
+   ENDIF
+*
+ SEGE CALL_PROCSTEM
+*______________________________________________________________________
+*
+ SEGS NOT_VALID
+*
+   MVC   EVALBLOCK_EVLEN,=F'30'
+   IF (CLI,ERR_NO,EQ,1)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'Argument 1 not entered'
+   ELSEIF (CLI,ERR_NO,EQ,2)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'Argument 1 was zero length'
+   ELSEIF (CLI,ERR_NO,EQ,3)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'Argument 1 > 44 bytes'
+   ELSEIF (CLI,ERR_NO,EQ,4)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'Argument 2 not entered'
+   ELSEIF (CLI,ERR_NO,EQ,5)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'Argument 2 was zero length'
+   ELSEIF (CLI,ERR_NO,EQ,6)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'Argument 2 > 20 byte'
+   ELSEIF (CLI,ERR_NO,EQ,7)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'Dynamic allocation failed'
+   ELSEIF (CLI,ERR_NO,EQ,8)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'Cannot open dataset'
+   ELSE
+     MVC   EVALBLOCK_EVDATA(30),=CL30'Unknown error, rc='
+     XR    R1,R1
+     IC    R1,ERR_NO                   take error number
+     CVD   R1,DOUB_WORD
+     OI    DOUB_WORD+7,X'0F'
+     UNPK  EVALBLOCK_EVDATA+18(4),DOUB_WORD    put in output message
+     XC    R_C,R_C
+   ENDIF
+*
+   PRGQUIT
+*
+ SEGE NOT_VALID
+*______________________________________________________________________
+*
+         IHAPDS  PDSBLDL=NO
+*
+         DCBD    DSORG=PO,DEVD=DA
+*
+         PRGSTAT
+*
+LOWVALS  DC    80XL1'00'
+HIGHVALS DC    8XL1'FF'
+*
+OUT_NAME DC    CL8' '
+         DC    C','
+OUT_RENT DC    CL2' '
+         DC    C','
+OUT_REUS DC    CL2' '
+         DC    C','
+OUT_LOAD DC    CL2' '
+         DC    C','
+OUT_EXEC DC    CL2' '
+         DC    C','
+OUT_AMOD DC    CL3' '
+         DC    C','
+OUT_RMOD DC    CL3' '
+         DC    C','
+OUT_AUTH DC    CL4' '
+OUT_END  EQU   *
+OUT_LEN  EQU   *-OUT_NAME
+*
+MEMLIST  DCB   DDNAME=RXLD1234,MACRF=(GL),DSORG=PS,EODAD=DIREND,       /
+               LRECL=256,BLKSIZE=256,RECFM=FB
+*
+         PRGSTEM PREF=THE_STEM
+*
+COPY_DSNAME      MVC   DODYNPRC_DATASET(0),0(R14)
+*
+         LTORG
+*______________________________________________________________________
+*
+         PRGESTAT
+         PRGEND
+         END

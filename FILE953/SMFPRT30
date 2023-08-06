@@ -1,0 +1,370 @@
+ TITLE 'SMFPRT30  - read SMF records from a VBS file'
+ PRINT GEN
+*______________________________________________________________________
+*
+* This program reads a VBS file containing SMF records.
+* Record types 30 and 15 are extracted and formatted to enable easy
+* reporting of which job last updated a dataset and who ran it.
+*
+* The dataset to be reported on should be entered on the PARM= JCL
+* statement. A wild card can be specified like this.
+* PARM='SDJRG.VBSA*'
+* PARM='SDJRG.VBSADLEN.OUTPUT.SPLIT'
+*
+* The SMF file is read and all type 15 records which have the required
+* dataset name are selected and held in an internal table.
+* The SMF file is then reread and type 30 records are checked to see
+* if they match the type 15 record, if so then both are output.
+*______________________________________________________________________
+*
+SMFPRT30 PRGDEF FSEG=MAIN_PART,RMODE=24,RENT=Y
+*
+SPAN_AREA      DS    F
+SPAN_LEN       DS    F
+SPAN_MAX       DS    F
+CONV_DATE      DS    PL4
+CONV_TIME      DS    F
+OUT_DATE       DS    CL8
+OUT_TIME       DS    CL11
+STEP_STA_DATE  DS    CL8               step start date
+STEP_STA_SEP   DS    C
+STEP_STA_TIME  DS    CL11              step start time
+STEP_END_DATE  DS    CL8               step end date
+STEP_END_SEP   DS    C
+STEP_END_TIME  DS    CL11              step end time
+*
+HALF_WORD      DS    H
+PARM_LEN       DS    H
+PARM_VALUE     DS    CL80
+*
+OUT_REC        DS    CL160
+SAVE_OUT_REC   DS    CL160
+*
+OUTPUT_30      DS    C
+EOF_SYSIN      DS    C
+WILD_CARD      DS    C
+IN_NAME        DS    CL44
+*
+CNT_HOLD       DS    F                 count of matches
+&MAX_HOLD      SETA  4096              save details of 4096 jobs
+HOLD_DETS      DS    &MAX_HOLD.CL133
+*
+         PRGEDEF
+*______________________________________________________________________
+*
+ SEGS MAIN_PART
+*
+   MVI   OUT_REC,C' '
+   MVC   OUT_REC+1(L'OUT_REC-1),OUT_REC
+   MVC   PARM_VALUE,OUT_REC
+*
+   PRGPARM PARM_VALUE,LEN=PARM_LEN
+   IF (CLC,PARM_LEN,EQ,=H'0')
+     MVC   MESS_TXT(L'NO_PARM),NO_PARM
+     SEGDO WRITE_LOG
+     PRGQUIT RC=4
+   ENDIF
+   LH    R1,PARM_LEN
+   AHI   R1,-1
+   MVI   IN_NAME,C' '
+   MVC   IN_NAME+1(L'IN_NAME-1),IN_NAME
+   EX    R1,COPY_NAME
+   LA    R2,PARM_VALUE
+   LA    R2,0(R1,R2)
+   IF (CLI,0(R2),EQ,C'*')
+     MVI   WILD_CARD,C'Y'
+     AHI   R1,-1
+   ENDIF
+   STH   R1,PARM_LEN                   save execute length
+*
+   L     R2,=F'32780'                  max SMF lrecl = 32767
+   ST    R2,SPAN_MAX                   save max length of spanned rec
+   STORAGE OBTAIN,LENGTH=(R2),LOC=31
+   ST    R1,SPAN_AREA                  save record address
+   LR    R3,R1
+   AHI   R3,-4                         Set SMF record base
+   LR    R6,R3
+   USING D_SMFREC,R3                   SMF record
+   USING SMFRCD30,R6                   SMF record type 30
+   USING SMF30ID,R7                    SMF record type identification
+   LA    R4,SMFJFCB1                   JFCB address
+   USING D_JFCB,R4                     JFCB
+*
+   SEGDO OPEN_SYSOUT
+   SEGDO WRITE_HEADING
+*
+*  first find all type 15 for dataset and hold them in table
+   SEGDO OPEN_SYSIN
+   LA    R5,HOLD_DETS                  point to table
+   DO INF
+     SEGDO GET_SYSIN
+   DOEXIT (CLI,EOF_SYSIN,EQ,C'Y')
+     IF (CLI,SMF30RTY,EQ,X'0F')
+       SEGDO PROCESS_RECORD_15         end of dataset for output
+     ENDIF
+   ENDDO
+   SEGDO CLOSE_SYSIN
+*
+*  now ensure dataset was found
+   L     R1,CNT_HOLD
+   IF (CFI,R1,EQ,0)
+     MVC   MESS_TXT(L'NOT_FOUND),NOT_FOUND
+     SEGDO WRITE_LOG
+     PRGQUIT RC=4
+   ENDIF
+*
+*  now find type 30 subtype 4 for held details
+   SEGDO OPEN_SYSIN
+   DO INF
+     SEGDO GET_SYSIN
+   DOEXIT (CLI,EOF_SYSIN,EQ,C'Y')
+     IF (CLI,SMF30RTY,EQ,X'1E'),AND,(CLC,SMF30STP,EQ,=H'4')
+       SEGDO PROCESS_RECORD_30         step total
+     ENDIF
+   ENDDO
+   SEGDO CLOSE_SYSIN
+*
+   SEGDO CLOSE_SYSOUT
+*
+   L     R2,SPAN_MAX                   release the storage
+   L     R1,SPAN_AREA
+   STORAGE RELEASE,ADDR=(R1),LENGTH=(R2)
+*
+ SEGE MAIN_PART
+*______________________________________________________________________
+*
+ SEGS PROCESS_RECORD_15
+*
+   MVC   OUT_REC+9(L'SMF14JBN),SMF14JBN        JOBNAME
+   MVC   OUT_REC+40(2),=C'15'                  RECORD TYPE 15
+   MVC   OUT_REC+45(L'SMFTIOE5),SMFTIOE5       DDNAME
+   MVC   OUT_REC+54(L'JFCBDSNM),JFCBDSNM       DATASET NAME
+   MVC   OUT_REC+55+L'JFCBDSNM(8),JFCBELNM     MEMBER NAME
+*
+   XR    R14,R14
+   XR    R15,R15
+   ICM   R14,B'0001',SMF14NUC
+   ICM   R15,B'0001',SMF14SUC
+   STH   R15,HALF_wORD
+   MH    R14,HALF_WORD
+   IF (TM,SMF14RIN+1,SMF14HBT,O)       Hiperbatch ?
+     LA    R14,SMFHBEND-SMFHBTCH(,R14)
+   ENDIF
+   IC    R15,SMF14SET
+   LA    R14,0(R15,R14)
+   IC    R15,SMF14SDC
+   LA    R14,244(R15,R14)
+   LA    R9,0(R3,R14)                  point to actual SMF14XIS area
+   LH    R8,0(,R9)                     size of extension
+   LA    R9,2(,R9)                     point past length field
+   AHI   R8,-2                         subtract length
+   DO INF
+   DOEXIT (LTR,R8,R8,NP)
+     IF (CLI,3(R9),EQ,3)               job step ?
+       MVC   OUT_REC+22(8),4(R9)       step name
+       MVC   OUT_REC+31(8),12(R9)      program name
+       MVC   OUT_REC(8),20(R9)         JES jobname
+     ENDIF
+     SH    R8,0(R9)
+     AH    R9,0(R9)
+   ENDDO
+*
+   MVC   CONV_DATE,SMF14DTE                    DATE
+   MVC   CONV_TIME,SMF14TME                    TIME
+   SEGDO CONVERT_TIME
+   MVC   OUT_REC+108(L'OUT_DATE),OUT_DATE
+   MVC   OUT_REC+117(L'OUT_TIME),OUT_TIME
+*
+   IF (CLI,WILD_CARD,EQ,C'Y')
+     LH    R1,PARM_LEN
+     IF (EX,R1,CHECK_NAME,EQ)
+       SEGDO HOLD_RECORD_15
+     ENDIF
+   ELSEIF (CLC,JFCBDSNM,EQ,IN_NAME)
+     SEGDO HOLD_RECORD_15
+   ENDIF
+*
+ SEGE PROCESS_RECORD_15
+*______________________________________________________________________
+*
+ SEGS HOLD_RECORD_15
+*
+   L     R1,CNT_HOLD
+   IF (CFI,R1,GE,&MAX_HOLD)
+     MVC   MESS_TXT(L'TOO_MANY),TOO_MANY
+     SEGDO WRITE_LOG
+     PRGQUIT RC=4
+   ENDIF
+   MVC   0(L'HOLD_DETS,R5),OUT_REC
+   LA    R5,L'HOLD_DETS(,R5)
+   AHI   R1,1
+   ST    R1,CNT_HOLD
+   MVI   OUT_REC,C' '
+   MVC   OUT_REC+1(L'OUT_REC-1),OUT_REC
+*
+ SEGE HOLD_RECORD_15
+*______________________________________________________________________
+*
+ SEGS PROCESS_RECORD_30
+*
+   MVI   OUT_REC,C' '
+   MVC   OUT_REC+1(L'OUT_REC-1),OUT_REC
+   L     R7,SMF30IOF
+   AR    R7,R6
+   MVC   OUT_REC(L'SMF30JNM),SMF30JNM          JES JOBNAME
+   MVC   OUT_REC+9(L'SMF30JBN),SMF30JBN        JOBNAME
+   LH    R1,SMF30STN                           STEP NUMBER
+   CVD   R1,DOUB_WORD
+   OI    DOUB_WORD+7,X'0F'
+   UNPK  OUT_REC+18(3),DOUB_WORD+6(2)          STEP NUMBER
+   MVC   OUT_REC+22(L'SMF30STM),SMF30STM       STEPNAME
+   MVC   OUT_REC+31(L'SMF30PGM),SMF30PGM       PROGRAM
+   MVC   OUT_REC+40(2),=C'30'                  RECORD TYPE 30
+   MVC   OUT_REC+43(2),=C'U='
+   MVC   OUT_REC+45(L'SMF30RUD),SMF30RUD       USERID
+   MVC   OUT_REC+54(L'SMF30USR),SMF30USR       PROGRAMMER NAME
+   IF (CLC,SMF30PSN,GT,=C'        ')
+     MVC   OUT_REC+75(L'SMF30PSN),SMF30PSN     STEPNAME if proc
+   ENDIF
+*
+   MVC   CONV_DATE,SMF30STD                    DATE STEP START
+   MVC   CONV_TIME,SMF30SIT                    TIME STEP START
+   SEGDO CONVERT_TIME
+   MVC   STEP_STA_DATE,OUT_DATE
+   MVC   STEP_STA_TIME,OUT_TIME
+   MVC   CONV_DATE,SMF30DTE                    DATE STEP END
+   MVC   CONV_TIME,SMF30TME                    TIME STEP END
+   SEGDO CONVERT_TIME
+   MVC   STEP_END_DATE,OUT_DATE
+   MVC   STEP_END_TIME,OUT_TIME
+   MVI   STEP_STA_SEP,C' '
+   MVI   STEP_END_SEP,C' '
+   MVC   OUT_REC+87(20),STEP_STA_DATE
+   MVC   OUT_REC+108(20),STEP_END_DATE
+*
+   LA    R5,HOLD_DETS                  point to table
+   L     R8,CNT_HOLD                   get count of entries
+   MVI   OUTPUT_30,0
+   MVC   SAVE_OUT_REC,OUT_REC
+   DO FROM=(R8)
+     IF (CLC,0(8,R5),EQ,SAVE_OUT_REC)          match jes jobname
+       IF (CLC,9(8,R5),EQ,SAVE_OUT_REC+9)      match jobname
+         IF (CLC,108(20,R5),GE,STEP_STA_DATE)    start date time
+           IF (CLC,108(20,R5),LE,STEP_END_DATE)    end date time
+             IF (CLI,OUTPUT_30,EQ,0)   first time for this step
+               MVI   OUTPUT_30,1
+               SEGDO PUT_SYSOUT              output type 30-4
+             ENDIF
+             MVC   OUT_REC,0(R5)             output type 15
+             SEGDO PUT_SYSOUT
+*            MVC   OUT_REC(8),STEP_STA_DATE
+*            MVC   OUT_REC+9(11),STEP_STA_TIME
+*            MVC   OUT_REC+30(8),113(R5)
+*            MVC   OUT_REC+39(11),122(R5)
+*            MVC   OUT_REC+60(8),SAVE_OUT_REC+113
+*            MVC   OUT_REC+69(11),SAVE_OUT_REC+122
+*            SEGDO PUT_SYSOUT
+           ENDIF
+         ENDIF
+       ENDIF
+     ENDIF
+     LA    R5,L'HOLD_DETS(,R5)
+   ENDDO
+*
+ SEGE PROCESS_RECORD_30
+*______________________________________________________________________
+*
+ SEGS CONVERT_TIME
+*
+   UNPK  OUT_DATE+1(7),CONV_DATE                DATE
+   IF (CLC,=C'01',EQ,OUT_DATE+1)
+     MVC   OUT_DATE(2),=C'20'
+   ELSEIF (CLC,=C'02',EQ,OUT_DATE+1)
+     MVC   OUT_DATE(2),=C'21'
+   ELSE
+     MVC   OUT_DATE(2),=C'19'
+   ENDIF
+   MVC   OUT_DATE+2(2),OUT_DATE+3
+   MVI   OUT_DATE+4,C'-'
+*
+   XC    DOUB_WORD,DOUB_WORD
+   L     R1,CONV_TIME
+   SLR   R0,R0                   Clear
+   D     R0,=F'360000'           Determine hours
+   CVD   R1,DOUB_WORD            Convert hours
+   OI    DOUB_WORD+7,X'0F'       Force sign
+*
+   UNPK  OUT_TIME(2),DOUB_WORD+6(2)  Unpack hours
+   MVI   OUT_TIME+2,C':'             Move colon
+   SRDL  R0,32                   Remaining hundredths of seconds
+   D     R0,=F'6000'             Determine minutes
+   CVD   R1,DOUB_WORD            Convert minutes
+   OI    DOUB_WORD+7,X'0F'       Force sign
+   UNPK  OUT_TIME+3(2),DOUB_WORD+6(2)  Unpack minutes
+   MVI   OUT_TIME+5,C':'             Move colon
+   SRDL  R0,32                   Remaining hundredths of seconds
+   D     R0,=F'100'              Determine seconds
+   CVD   R1,DOUB_WORD            Convert seconds
+   OI    DOUB_WORD+7,X'0F'       Force sign
+   UNPK  OUT_TIME+6(2),DOUB_WORD+6(2)  Unpack seconds
+   MVI   OUT_TIME+8,C'.'             Move period
+   CVD   R0,DOUB_WORD            Convert hundredths of seconds
+   OI    DOUB_WORD+7,X'0F'       Force sign
+   UNPK  OUT_TIME+9(2),DOUB_WORD+6(2)  Unpack hundredths of seconds
+*
+ SEGE CONVERT_TIME
+*______________________________________________________________________
+*
+ SEGS WRITE_HEADING
+*
+   MVC   OUT_REC(L'HEAD_00),HEAD_00
+   MVC   OUT_REC+L'HEAD_00(44),IN_NAME
+   SEGDO PUT_SYSOUT
+   MVC   OUT_REC(L'HEAD_01),HEAD_01
+   SEGDO PUT_SYSOUT
+   MVC   OUT_REC+18(L'HEAD_02),HEAD_02
+   SEGDO PUT_SYSOUT
+   MVC   OUT_REC+40(L'HEAD_03),HEAD_03
+   MVC   OUT_REC+99(L'HEAD_04),HEAD_04
+   SEGDO PUT_SYSOUT
+   MVI   OUT_REC,C'-'
+   MVC   OUT_REC+1(L'OUT_REC-1),OUT_REC
+   SEGDO PUT_SYSOUT
+*
+ SEGE WRITE_HEADING
+*______________________________________________________________________
+*
+ PRGDCBI DCB=SYSIN,EOF=EOF_SYSIN,                                      /
+               SPANA=SPAN_AREA,SPANL=SPAN_LEN,SPANM=SPAN_MAX
+ PRGDCBO DCB=SYSOUT,REC=OUT_REC
+*______________________________________________________________________
+*
+D_SMFREC DSECT                     SMF record dummy control section
+         IFASMFR  14               SMF RT 15
+*
+         IFASMFR  30               SMF RT 30
+*
+D_JFCB   DSECT                     HFCB dummy control section
+         IEFJFCBN LIST=YES
+*
+         PRGSTAT
+*
+COPY_NAME      MVC   IN_NAME(0),PARM_VALUE
+CHECK_NAME     CLC   JFCBDSNM(0),IN_NAME
+NOT_FOUND      DC    C'Dataset not found in SMF 15'
+NO_PARM  DC    C'Specify dataset name on PARM='
+TOO_MANY DC    C'Too many matches for dataset'
+HEAD_00  DC    C'Find dataset '
+HEAD_01  DC    C'Job-num  Job-nam      Step-nam Pgm      SMF'
+HEAD_02  DC    C'Step-num              30   User-ID  Programmer name   /
+                  Proc-name   Step-start-tstmp     Step-end-tstmp'
+HEAD_03  DC    C'15   DDNAM    DSN'
+HEAD_04  DC    C'Member   Timestamp'
+*
+SYSIN    DCB   DSORG=PS,DDNAME=SYSIN,MACRF=(GL),EODAD=END_SYSIN
+*
+SYSOUT   DCB   DSORG=PS,DDNAME=SYSOUT,MACRF=(PM),RECFM=FB,LRECL=128
+*
+         PRGESTAT
+         PRGEND
+         END

@@ -1,0 +1,700 @@
+ TITLE 'VOLUMES1  - OBTAIN VTOC DETAILS OF VOLUMES'
+*______________________________________________________________________
+*
+VOLUMES1 PRGDEF FSEG=MAIN_PART,RMODE=24,RENT=Y
+*                         RENT=Y - storage between PRGDEF and PRGEDEF
+*                                  is getmained
+*
+*  Created by John Gateley
+*
+*  This program does a UCB scan for all on-line disks, reads the VTOC
+*  and outputs all format 1, 3, 8 and 9 DSCBs to OUTDETS.
+*  A summary of the volumes will be output to SYSOUT.
+*
+*  Optionally a list of volume names can be specified in SYSIN
+*  and the output will be limited to those.
+*
+*  Alternatively specify a pattern for the volume names like this
+*           PGM=VOLUMES1,PARM='STG'
+*  and only volumes that match 'STG***' will be examined.
+*  SYSIN overrides PARM=
+*
+PL_16          DS    PL16
+DODYNVOL_PARM        DS    0D          parameter area for DODYNVOL
+DODYNVOL_ACTION      DS    CL1
+DODYNVOL_VOLUME      DS    CL6
+DODYNVOL_DDNAME      DS    CL8
+DODYNVOL_DATASET     DS    CL44
+DODYNVOL_MEMBER      DS    CL8
+*
+EXCPSAVE DS    16F
+CBSIZE   DS    2F                      size and location of memory
+CBADDR   EQU   CBSIZE+4
+NDSCBS   DS    F                       number of dscb's per track
+DSCBSTRT DS    F                       address of 1st dscb buffer
+DSCBLIM  DS    F                       address of last dscb buffer
+DSCBADR  DS    F                       address of current dscb
+TTRN     DS    F                       relative track number
+VOL_PATTERN    DS    CL6               for e.g. PARM='STG'
+*
+OUTPUT_DETAILS DS    CL1
+PROCESS_SYSIN  DS    CL1
+E_O_F          DS    CL1
+BITS_28        DS    CL1               flag for IEC142I 113-48 abend
+*
+LAST_DSCB      DS    XL5
+THIS_DS4HPCHR  DS    XL5
+SYSOUT_REC     DS    CL80
+OUTDETS_REC    DS    CL156
+*
+MAX_VOLS       EQU   100               maximum volumes in SYSIN
+VOLUME_LISTN   DS    H
+VOLUME_LIST    DS    (MAX_VOLS)CL6
+*
+&OUT_LEN       SETA  80
+&OUT_MAX       SETA  1000              maximum ouput volumes
+HOLD_COUNT     DS    H
+HOLD_OUTPUT    DS    &OUT_MAX.CL80     holding area for volume summary
+*                                      so that output can be sorted
+DSCB_F1  DSECT
+         DS    CL8
+DSCB_BASE      EQU   *
+         IECSDSL1 (1)                  generate format 1 DSCB labels
+DSCB_F1E EQU   *
+DSCB_F1_DS1PTRDS   EQU   DS1PTRDS-DSCB_F1
+         ORG   DSCB_BASE
+         IECSDSL1 (3)                  generate format 3 DSCB labels
+         ORG
+*
+         PRGEDEF
+*
+         USING UCB_DETS,U#COPY
+         USING DSCB_F1,R6
+         USING DCBE,VTOCNME
+         USING IHADCB,VTOCNM
+*______________________________________________________________________
+*
+ SEGS MAIN_PART
+*
+   MVC   VOL_PATTERN,=C'******'        pattern for volumes names
+   L     R1,0(R1)
+   IF (CLC,0(2,R1),NE,=H'0')           parm is there
+     IF (CLC,0(2,R1),GT,=H'6')         max volume name is 6
+       MVC   MESS_TXT(L'ERR_PARM),ERR_PARM
+       SEGDO WRITE_LOG
+       PRGQUIT RC=8
+     ENDIF
+     LH    R2,0(R1)                    get length
+     BCTR  R2,0                        minus 1 for execute
+     EX    R2,COPY_VOL_PAT             copy over the pattern
+   ENDIF
+*
+   SEGDO OPEN_SYSOUT
+   SEGDO CHECK_OPTIONS                 see what processing is required
+   IF (CLI,PROCESS_SYSIN,NE,C'Y')      if not using SYSIN write pattern
+     MVC   SYSOUT_REC(L'HEAD_L1),HEAD_L1
+     MVC   SYSOUT_REC+L'HEAD_L1-6(6),VOL_PATTERN
+     SEGDO PUT_SYSOUT
+     SEGDO PUT_SYSOUT
+   ENDIF
+*
+   IF (CLI,OUTPUT_DETAILS,EQ,C'Y')     if DD name OUTDETS specified
+     SEGDO OPEN_OUTDETS
+   ENDIF
+*
+   LAY   R8,HOLD_OUTPUT                first output record
+   XR    R7,R7                         initialise count of records
+   XC    U#WORK,U#WORK
+   DO INF
+     UCBSCAN COPY,WORKAREA=U#WORK,UCBAREA=U#COPY,DEVCLASS=DASD,        /
+               DYNAMIC=YES,DEVNCHAR=DEVNCHAR,RANGE=ALL
+   DOEXIT (LTR,R15,R15,NZ)             quit if no more UCB
+     IF (TM,UCBSTAT,UCBONLI,NZ)        is it online
+       IF (CLI,PROCESS_SYSIN,EQ,C'Y')
+         LA    R14,VOLUME_LIST         list of volume to include
+         LH    R15,VOLUME_LISTN        number in list
+         DO FROM=(R15)
+         DOEXIT (CLC,UCBVOLI,EQ,0(R14))
+           LA    R14,6(,R14)
+         ENDDO
+         IF (CFI,R15,NE,0)             found volume so process it
+           MVC   U#VOL,UCBVOLI
+           MVC   SYSOUT_REC(6),UCBVOLI
+           MVC   SYSOUT_REC+10(L'VOL_SEL),VOL_SEL
+           SEGDO PUT_SYSOUT
+           SEGDO GET_VOL_FILE_DETAILS
+           SEGDO GET_VOLUME_SUMMARY
+         ENDIF
+       ELSE
+         IF (CLC,UCBVOLI(1),EQ,VOL_PATTERN),OR,                        /
+               (CLI,VOL_PATTERN,EQ,C'*'),ANDIF,                        /
+               (CLC,UCBVOLI+1(1),EQ,VOL_PATTERN+1),OR,                 /
+               (CLI,VOL_PATTERN+1,EQ,C'*'),ANDIF,                      /
+               (CLC,UCBVOLI+2(1),EQ,VOL_PATTERN+2),OR,                 /
+               (CLI,VOL_PATTERN+2,EQ,C'*'),ANDIF,                      /
+               (CLC,UCBVOLI+3(1),EQ,VOL_PATTERN+3),OR,                 /
+               (CLI,VOL_PATTERN+3,EQ,C'*'),ANDIF,                      /
+               (CLC,UCBVOLI+4(1),EQ,VOL_PATTERN+4),OR,                 /
+               (CLI,VOL_PATTERN+4,EQ,C'*'),ANDIF,                      /
+               (CLC,UCBVOLI+5(1),EQ,VOL_PATTERN+5),OR,                 /
+               (CLI,VOL_PATTERN+5,EQ,C'*')
+           MVC   U#VOL,UCBVOLI
+           MVC   SYSOUT_REC(6),UCBVOLI
+           MVC   SYSOUT_REC+10(L'VOL_SEL),VOL_SEL
+           SEGDO PUT_SYSOUT
+           SEGDO GET_VOL_FILE_DETAILS
+           SEGDO GET_VOLUME_SUMMARY
+         ENDIF
+       ENDIF
+     ENDIF
+   ENDDO
+*
+   SEGDO WRITE_HEADINGS
+   STH   R7,HOLD_COUNT
+   SEGDO SORT_OUTPUT
+   SEGDO OUTPUT_SORTED
+   SEGDO PUT_SYSOUT                    output blank line
+*
+   MVC   SYSOUT_REC(L'ED_PL3),ED_PL3
+   ED    SYSOUT_REC(L'ED_PL3),NUM_VOLS+1
+   MVC   SYSOUT_REC(L'ED_PL3),SYSOUT_REC+1
+   MVI   SYSOUT_REC+L'ED_PL3-1,C' '
+   IF (CP,NUM_VOLS,GT,=P'0')
+     MVC   SYSOUT_REC+6(L'ED_PL5),ED_PL5
+     ED    SYSOUT_REC+6(L'ED_PL5),TOTAL_TRACKS+3     total tracks
+     ZAP   DOUB_WORD,TOTAL_TRACKS
+     SP    DOUB_WORD,TOTAL_FREE
+     MVC   SYSOUT_REC+18(L'ED_PL5),ED_PL5
+     ED    SYSOUT_REC+18(L'ED_PL5),DOUB_WORD+3       total used
+     MVC   SYSOUT_REC+30(L'ED_PL5),ED_PL5
+     ED    SYSOUT_REC+30(L'ED_PL5),TOTAL_FREE+3      total free tracks
+     MVC   SYSOUT_REC+42(L'ED_PL5),ED_PL5
+     ED    SYSOUT_REC+42(L'ED_PL5),TOTAL_CONTIG+3    total contig
+*
+     IF (CP,TOTAL_TRACKS,GT,=P'0')
+       ZAP   PL_16,TOTAL_FREE          total number of free tracks
+       MP    PL_16,=P'100000'
+       DP    PL_16,TOTAL_TRACKS        total number of available trk
+       SRP   PL_16(8),64-1,5           shift right, normal rounding
+       MVC   SYSOUT_REC+55(L'ED_PL4D2),ED_PL4D2
+       ED    SYSOUT_REC+55(L'ED_PL4D2),PL_16+4       % free space
+     ENDIF
+     MVC   SYSOUT_REC+65(L'ED_PL5),ED_PL5
+     ED    SYSOUT_REC+65(L'ED_PL5),TOTAL_FILES+3     total files
+   ENDIF
+   SEGDO PUT_SYSOUT
+   IF (CP,TOTAL_TRACKS,GT,=P'999999999')     overflow in totals
+     MVC   SYSOUT_REC(L'OVER_FLOW),OVER_FLOW
+     SEGDO PUT_SYSOUT
+     SETRC RC=4
+   ENDIF
+*
+   SEGDO CLOSE_SYSOUT
+   IF (CLI,OUTPUT_DETAILS,EQ,C'Y')
+     SEGDO CLOSE_OUTDETS
+   ENDIF
+*
+ SEGE MAIN_PART
+*______________________________________________________________________
+*
+ SEGS GET_VOLUME_SUMMARY
+*
+   MVC   SYSOUT_REC(6),UCBVOLI
+*
+   LA    R3,U#COPY
+   LSPACE UCB=(R3),EXPMSG=U#EXPMSG,F4DSCB=U#F4DSCB+44
+*
+* this is the format of EXPMSG
+*  0123456789012345678901234567890123456789
+*  SPACE=aaaaaa,bbbbbb,cccccc/dddddd,eeeeee
+*  aaaaaa = total number of free cylinders
+*  bbbbbb = total number of additinal free tracks
+*  cccccc = total number of free extents
+*  dddddd = number of cylinders in largest free extent
+*  eeeeee = number of additional tracks in largest free extent
+*
+   PACK  DOUB_WORD,U#EXPMSG+6(6)       number of free cylinders
+   CVB   R1,DOUB_WORD                  convert to binary
+   MH    R1,DS4DSTRK                   number of tracks per cyl
+   CVD   R1,DOUB_WORD                  convert to decimal
+   PACK  FREE_TRKS,U#EXPMSG+13(6)      number of extra tracks
+   AP    DOUB_WORD,FREE_TRKS           total free
+   ZAP   VOLUME_FREE,DOUB_WORD
+*
+   PACK  DOUB_WORD,U#EXPMSG+27(6)      number cylinders free extent
+   CVB   R1,DOUB_WORD                  convert to binary
+   MH    R1,DS4DSTRK                   number of tracks per cyl
+   CVD   R1,DOUB_WORD                  convert to decimal
+   PACK  FREE_TRKS,U#EXPMSG+34(6)      number of extra tracks
+   AP    DOUB_WORD,FREE_TRKS           total free
+   ZAP   CONTIG_FREE,DOUB_WORD
+*
+   XR    R1,R1
+   ICM   R1,B'0011',DS4DSCYL           total number of cylinders
+   IF (CLC,DS4DSCYL,EQ,=X'FFFE')       extended attribute volume
+     L     R1,DS4DCYL
+   ENDIF
+   MH    R1,DS4DSTRK                   number of tracks per cyl
+   CVD   R1,VOLUME_TRACKS              give available tracks
+   MVC   SYSOUT_REC+6(L'ED_PL5),ED_PL5
+   ED    SYSOUT_REC+6(L'ED_PL5),VOLUME_TRACKS+3    total tracks
+*
+   ZAP   DOUB_WORD,VOLUME_TRACKS
+   SP    DOUB_WORD,VOLUME_FREE
+   MVC   SYSOUT_REC+18(L'ED_PL5),ED_PL5
+   ED    SYSOUT_REC+18(L'ED_PL5),DOUB_WORD+3       used tracks
+   MVC   SYSOUT_REC+30(L'ED_PL5),ED_PL5
+   ED    SYSOUT_REC+30(L'ED_PL5),VOLUME_FREE+3     free tracks
+   MVC   SYSOUT_REC+42(L'ED_PL5),ED_PL5
+   ED    SYSOUT_REC+42(L'ED_PL5),CONTIG_FREE+3     contig tracks
+*
+   IF (CP,VOLUME_TRACKS,GT,=P'0')
+     ZAP   PL_16,VOLUME_FREE
+     MP    PL_16,=P'100000'
+     DP    PL_16,VOLUME_TRACKS
+     SRP   PL_16(8),64-1,5
+     MVC   SYSOUT_REC+55(L'ED_PL4D2),ED_PL4D2
+     ED    SYSOUT_REC+55(L'ED_PL4D2),PL_16+4       % free space
+   ENDIF
+   MVC   SYSOUT_REC+65(L'ED_PL5),ED_PL5
+   ED    SYSOUT_REC+65(L'ED_PL5),VOLUME_FILES+3  total files
+   IF (CFI,R7,GE,&OUT_MAX.)
+     MVC   SYSOUT_REC(L'TOO_MANY_O),TOO_MANY_O
+     SEGDO PUT_SYSOUT
+     PRGQUIT RC=8
+   ENDIF
+   MVC   0(L'SYSOUT_REC,R8),SYSOUT_REC   copy to sort area
+   LA    R8,&OUT_LEN.(,R8)
+   AHI   R7,1
+   MVI   SYSOUT_REC,C' '
+   MVC   SYSOUT_REC+1(L'SYSOUT_REC-1),SYSOUT_REC
+*
+   AP    NUM_VOLS,=P'1'
+   AP    TOTAL_FREE,VOLUME_FREE
+   AP    TOTAL_TRACKS,VOLUME_TRACKS
+   AP    TOTAL_CONTIG,CONTIG_FREE
+   AP    TOTAL_FILES,VOLUME_FILES
+*
+ SEGE GET_VOLUME_SUMMARY
+*______________________________________________________________________
+*
+ SEGS GET_VOL_FILE_DETAILS
+*
+   ZAP   VOLUME_FILES,=P'0'
+   SEGDO DYNALLOC_A
+*  we need to copy the pattern over the actual DCB and DCBE otherwise
+*  EADSCB=OK is lost for second dataset
+   MVC   VTOCNM(VTOCNMX-VTOCNM),VTOCNMX
+   MVC   VTOCNME(VTOCNMEX-VTOCNME),VTOCNMEX
+   LA    R0,VTOCNME
+   ST    R0,VTOCNM                     DCB's DCBE address
+*
+   RDJFCB VTOCNM
+   MVI   JFCBDSNM,X'04'                set name to all x'04'
+   MVC   JFCBDSNM+1(L'JFCBDSNM-1),JFCBDSNM
+   OI    JFCBTSDM,JFCNWRIT
+   MVI   BITS_28,C'N'
+   OPEN  (VTOCNM,INPUT),TYPE=J
+   IF (CLI,BITS_28,EQ,C'Y')
+     MVC   SYSOUT_REC(L'NO_BIT28),NO_BIT28
+     MVC   SYSOUT_REC+L'NO_BIT28(6),UCBVOLI
+     SEGDO PUT_SYSOUT
+     SEGDO DYNALLOC_D
+     SEGQUIT
+   ENDIF
+   IF (CFI,R15,NE,0)
+     MVC   SYSOUT_REC(8),=C'OPEN RC='
+     XUNPK (R15),,SYSOUT_REC+10
+     SEGDO PUT_SYSOUT
+   ELSE
+     STM   R0,R15,EXCPSAVE             save our regs
+     LA    R3,EXCPSAVE                 point to the register save area
+     ICM   R0,B'1111',=X'00000100'     first dscb
+     L     R1,DCBDEBAD                 deb address
+     LA    R2,IOBSEEK                  save address of cchhr
+     L     R15,CVTPTR                  get address of cvt
+     L     R15,CVTPCNVT-CVT(R15)       get address of convert routine
+     BALR  R14,R15                     go to convert routine
+     LM    R0,R15,0(R3)                get my regs back
+     OBTAIN DSCBFMT4,EADSCB=OK         get format 4 dscb
+     IF (CFI,R15,EQ,0),AND,(CLI,DS4IDFMT,EQ,X'F4')
+       MVC   THIS_DS4HPCHR,DS4HPCHR
+       XR    R15,R15                   clear register
+       IC    R15,DS4DEVDT              get number of dscbs per track
+       ST    R15,NDSCBS                save the number of dscbs
+       LA    R0,156                    core for one dscb and its ccw
+       MH    R0,NDSCBS+2               times number per track
+       AH    R0,=H'15'                 plus 1 ccw and rounding
+       N     R0,=X'FFFFFFF8'           round to double-word multiple
+       ST    R0,CBSIZE                 save size of gotten core
+       GETMAIN  R,LV=(0)               get track buffers
+       ST    R1,CBADDR                 save address of gotten core
+       L     R4,NDSCBS                 number of dscb's
+       SLL   R4,3                      times   8
+       LA    R4,8(R4,R1)               plus 8 and base = 1st buffer add
+       ST    R4,DSCBSTRT               save address of first buffer
+       ST    R1,IOBSTART               address of channel program
+       MVC   0(8,R1),INITCCW           insert first ccw
+       LA    R5,8(R1)                  place for next ccw
+       LA    R6,1                      buffer counter
+       DO INF
+         MVC   0(8,R5),READCCW         insert read ccw for one dscb
+         ST    R4,0(R5)                set its buffer address
+         MVI   0(R5),READCKD           restore command code
+       DOEXIT (C,R6,NL,NDSCBS)
+         LA    R5,8(R5)                increment CCW address
+         LA    R4,148(R4)              increment buffer address
+         LA    R6,1(R6)                increment buffer counter
+       ENDDO
+       NI    4(R5),X'FF'-CC            turn off command chain bit
+       ST    R4,DSCBLIM                save address of last dscb buffer
+       SR    R0,R0
+       ST    R0,TTRN                   set relative track number to 0
+       SEGDO START_EXCP
+       LM    R0,R1,CBSIZE              load size and location
+       FREEMAIN  R,LV=(0),A=(1)        free core
+     ENDIF
+     CLOSE VTOCNM
+   ENDIF
+*
+   SEGDO DYNALLOC_D
+*
+ SEGE GET_VOL_FILE_DETAILS
+*______________________________________________________________________
+*
+ SEGS START_EXCP
+*
+   XC    LAST_DSCB,LAST_DSCB
+   DO INF
+     STM   R0,R15,EXCPSAVE             save important registers
+     LA    R3,EXCPSAVE                 save regs for restoring after cl
+     L     R0,TTRN                     load relative track number
+     L     R1,DCBDEBAD                 load deb address
+     LA    R2,IOBSEEK                  load addr to receive mbbcchhr
+     L     R15,CVTPTR                  load cvt address
+     L     R15,CVTPCNVT-CVT(R15)       load addr of convert routine
+     BALR  R14,R15                     convert ttrn to mbbcchhr
+     LM    R0,R14,0(R3)                restore registers except r15
+   DOEXIT (CFI,R15,NE,0)
+     SR    R0,R0
+     ST    R0,VTOCECB                  clear ecb
+     EXCP  VTOCIOB                     start channel program
+     WAIT  ECB=VTOCECB
+     IF (CLI,VTOCECB,EQ,X'7F')         all OK
+       SEGDO COUNT_FILE_NAMES
+     ENDIF
+     L     R1,TTRN                     load relative track number
+     AL    R1,=X'00010000'             increment to next track
+     ST    R1,TTRN
+   ENDDO
+   SEGDO COUNT_FILE_NAMES
+*
+ SEGE START_EXCP
+*______________________________________________________________________
+*
+ SEGS COUNT_FILE_NAMES
+*
+   L     R6,DSCBSTRT                   set buffer pointer to 1st DSCB
+   DO INF
+   DOEXIT (C,R6,GT,DSCBLIM)
+     IF (CLC,0(5,R6),GT,LAST_DSCB)
+       IF (CLI,DS1FMTID,EQ,X'F1'),OR,(CLI,DS1FMTID,EQ,X'F8')
+         AP    VOLUME_FILES,=P'1'
+       ENDIF
+       IF (CLI,OUTPUT_DETAILS,EQ,C'Y')
+         IF (CLI,DS1FMTID,EQ,C'1'),OR,(CLI,DS1FMTID,EQ,C'3'),OR,       /
+               (CLI,DS1FMTID,EQ,C'8'),OR,(CLI,DS1FMTID,EQ,C'9')
+           MVC   OUTDETS_REC(6),U#VOL      volume name
+           MVC   OUTDETS_REC+6(148),0(R6)  DSCB record
+           SEGDO PUT_OUTDETS
+         ENDIF
+       ENDIF
+       MVC   LAST_DSCB,0(R6)           copy this track address
+     ENDIF
+     LA    R6,148(R6)                  advance to next DSCB
+   ENDDO
+*
+ SEGE COUNT_FILE_NAMES
+*______________________________________________________________________
+*
+ SEGS WRITE_HEADINGS
+*
+   SEGDO PUT_SYSOUT
+   MVC   SYSOUT_REC(L'HEAD_L2),HEAD_L2
+   SEGDO PUT_SYSOUT
+   MVC   SYSOUT_REC(L'HEAD_L3),HEAD_L3
+   SEGDO PUT_SYSOUT
+   MVC   SYSOUT_REC(L'HEAD_L4),HEAD_L4
+   SEGDO PUT_SYSOUT
+   SEGDO PUT_SYSOUT
+*
+ SEGE WRITE_HEADINGS
+*______________________________________________________________________
+*
+ SEGS CHECK_OPTIONS
+*
+   LA    R1,=CL8'OUTDETS'              is OUTDETS DD name there
+   ST    R1,MY_P_1
+   LA    R1,SYSOUT_REC
+   ST    R1,MY_P_2
+   LA    R1,MY_PARM
+   L     R15,=V(GETDSN)
+   BASR  R14,R15
+   IF (CFI,R15,EQ,0)
+     MVI   OUTPUT_DETAILS,C'Y'         yes - so output all DSCBs
+   ENDIF
+*
+   LA    R1,=CL8'SYSIN'                is SYSIN DD name there
+   ST    R1,MY_P_1
+   LA    R1,SYSOUT_REC
+   ST    R1,MY_P_2
+   LA    R1,MY_PARM
+   L     R15,=V(GETDSN)
+   BASR  R14,R15
+   IF (CFI,R15,EQ,0)
+     MVI   PROCESS_SYSIN,C'Y'          yes - read volume names
+   ENDIF
+*
+   IF (CLI,PROCESS_SYSIN,EQ,C'Y')
+     SEGDO OPEN_SYSIN
+     LA    R4,VOLUME_LIST
+     XR    R5,R5
+     DO INF
+       SEGDO GET_SYSIN
+     DOEXIT (CLI,E_O_F,EQ,C'Y')
+       IF (CLI,0(R1),NE,C'*')
+         IF (CFI,R5,EQ,MAX_VOLS)
+           MVC   SYSOUT_REC(L'TOO_MANY_V),TOO_MANY_V
+           SEGDO PUT_SYSOUT
+           PRGQUIT RC=8
+         ENDIF
+         MVC   0(6,R4),0(R1)
+         LA    R4,6(,R4)
+         AHI   R5,1
+       ENDIF
+     ENDDO
+     STH   R5,VOLUME_LISTN
+     SEGDO CLOSE_SYSIN
+     IF (CFI,R5,EQ,0)
+       MVI   PROCESS_SYSIN,C'N'        empty so switch off
+     ENDIF
+   ENDIF
+*
+ SEGE CHECK_OPTIONS
+*______________________________________________________________________
+*
+ SEGS SORT_OUTPUT
+*
+   LAY   R8,HOLD_OUTPUT
+   LH    R7,HOLD_COUNT
+   IF (CFI,R7,GT,1)
+     BCTR  R7,0
+     DO FROM=(R7)
+       LR    R15,R7
+       LA    R14,&OUT_LEN.(,R8)
+       DO FROM=(R15)
+         IF (CLC,0(&OUT_LEN,R8),GT,0(R14))
+           XC    0(&OUT_LEN,R8),0(R14)
+           XC    0(&OUT_LEN,R14),0(R8)
+           XC    0(&OUT_LEN,R8),0(R14)
+         ENDIF
+         LA    R14,&OUT_LEN.(,R14)
+       ENDDO
+       LA    R8,&OUT_LEN.(,R8)
+     ENDDO
+   ENDIF
+*
+ SEGE SORT_OUTPUT
+*______________________________________________________________________
+*
+ SEGS OUTPUT_SORTED
+*
+   LAY   R8,HOLD_OUTPUT
+   LH    R7,HOLD_COUNT
+   IF (CFI,R7,GT,0)
+     DO FROM=(R7)
+       MVC   SYSOUT_REC,0(R8)
+       SEGDO PUT_SYSOUT
+       LA    R8,&OUT_LEN.(,R8)
+     ENDDO
+   ENDIF
+*
+ SEGE OUTPUT_SORTED
+*______________________________________________________________________
+*
+ SEGS DYNALLOC_A
+*
+   MVI   DODYNVOL_ACTION,C'A'          dynamically allocate
+   MVC   DODYNVOL_VOLUME,U#VOL
+   MVC   DODYNVOL_DDNAME,=CL8'VTOCNM'
+   MVC   DODYNVOL_DATASET,=CL44'FORMAT4.DSCB'
+   XC    DODYNVOL_MEMBER,DODYNVOL_MEMBER
+   LA    R1,DODYNVOL_PARM
+   ST    R1,MY_P_1
+   LA    R1,MY_PARM
+   L     R15,=V(DODYNVOL)
+   BASR  R14,R15
+   IF (CFI,R15,NE,0)
+     ST    R15,R_C
+     PRGQUIT
+   ENDIF
+*
+ SEGE DYNALLOC_A
+*______________________________________________________________________
+*
+ SEGS DYNALLOC_D
+*
+   MVI   DODYNVOL_ACTION,C'D'          dynamically de-allocate
+   LA    R1,DODYNVOL_PARM
+   ST    R1,MY_P_1
+   LA    R1,MY_PARM
+   L     R15,=V(DODYNVOL)
+   BASR  R14,R15
+   IF (LTR,R15,R15,NZ)
+     ST    R15,R_C
+     PRGQUIT
+   ENDIF
+*
+ SEGE DYNALLOC_D
+*______________________________________________________________________
+*
+ PRGDCBI DCB=SYSIN,EOF=E_O_F
+*
+ PRGDCBO DCB=SYSOUT,REC=SYSOUT_REC     generate code for SYSOUT
+*
+ PRGDCBO DCB=OUTDETS,REC=OUTDETS_REC   generate code for OUTDETS
+*______________________________________________________________________
+*
+               PRGSTAT
+*
+COPY_VOL_PAT   MVC   VOL_PATTERN(1),2(R1)
+*
+* this routine was used in debugging abend IEC142I 113-48 which
+* showed that EADSCB=OK in the DCBE did not remain set for the
+* second file. As a result I created a template DCB and DCBE and
+* copied them over the real ones for each file.
+TST_ABND DS    0H
+         L     R2,0(,R1)               get completion code
+         N     R2,=A(X'FFF0FF00')      ensure nibles 4, 7 and 8 are 0
+         IF (CL,R2,NE,=A(X'11304800')) is it IEC142I 113-48 abend
+*                                      meaning 28bit cylinder numbers
+           MVI   4(R1),0               no, abnormally terminate
+         ELSE
+           MVI   3(R1),4               ignore the abend
+           MVI   BITS_28,C'Y'          set indicator
+         ENDIF
+         BR    R14
+*
+VTOCNM   DCB   DDNAME=VTOCNM,MACRF=(E),EXLST=LIST1,DCBE=VTOCNME
+VTOCNMX  DCB   DDNAME=VTOCNM,MACRF=(E),EXLST=LIST1,DCBE=VTOCNMEX
+VTOCNME  DCBE  EADSCB=OK
+VTOCNMEX DCBE  EADSCB=OK
+LIST1    DS    0F
+         DC    X'11',AL3(TST_ABND)     abend exit
+         DC    X'87',AL3(MY_JFCB)
+         PUSH  PRINT,NOPRINT
+         PRINT NOGEN
+MY_JFCB  DS    0F
+         IEFJFCBN LIST=NO
+         POP   PRINT,NOPRINT
+*
+SYSIN    DCB   DDNAME=SYSIN,MACRF=(GL),DSORG=PS,EODAD=END_SYSIN
+SYSOUT   DCB   DDNAME=SYSOUT,MACRF=(PM),DSORG=PS,RECFM=FB,LRECL=80
+OUTDETS  DCB   DDNAME=OUTDETS,MACRF=(PM),DSORG=PS,RECFM=FB,LRECL=154
+*
+DSCBFMT4 CAMLST SEEK,IOBSEEK+3,U#VOL,U#F4DSCB,EADSCB=OK
+INITCCW  CCW   READR0,0,CC+SLI+SKIP,8
+READCCW  CCW   READCKD,0,CC,148
+* tags for channel commands and flag bits:
+READR0   EQU   X'16'                   read record 0
+READCKD  EQU   X'1E'                   read count, key, and data
+CC       EQU   X'40'                   command chain flag
+SLI      EQU   X'20'                   suppress length indication flag
+SKIP     EQU   X'10'                   skip data transfer flag
+*
+* IOB for channel program
+VTOCIOB  DS    0D
+IOBFLAG1 DC    X'42000000'             command chain, not related
+IOBECB   DC    A(VTOCECB)
+         DC    2F'0'
+IOBSTART DC    A(0)                    channel program beginning
+IOBDCB   DC    A(VTOCNM)
+         DC    X'03000000'
+         DC    F'0'
+IOBSEEK  DC    D'0'                    initial seek address
+*
+* event control block for channel program:
+VTOCECB  DC    F'0'                    event control block
+*
+IOBCONST DS    0D
+         DC    X'42000000'             command chain, not related
+         DC    A(0)                    ecb address
+         DC    2F'0'
+         DC    A(0)                    channel program beginning
+         DC    A(0)                    DCB address
+         DC    X'03000000'
+         DC    F'0'
+         DC    D'0'                    initial seek address
+IOBCONL  EQU   *-IOBCONST
+*
+DEVNCHAR       DC    CL4' '
+*
+U#VOL          DS    CL6
+U#COPY         DS    XL48
+U#WORK         DS    XL100
+U#EXPMSG       DS    XL40
+               DS    0D
+U#F4DSCB       DS    XL140
+               ORG   U#F4DSCB+44
+               IECSDSL1 4
+*
+FREE_TRKS      DC    PL3'0'
+               DS    0D
+VOLUME_FREE    DC    PL8'0'
+CONTIG_FREE    DC    PL8'0'
+VOLUME_FILES   DC    PL8'0'
+VOLUME_TRACKS  DC    PL8'0'
+TOTAL_FREE     DC    PL8'0'
+TOTAL_TRACKS   DC    PL8'0'
+TOTAL_CONTIG   DC    PL8'0'
+TOTAL_FILES    DC    PL8'0'
+NUM_VOLS       DC    PL4'0'
+*
+ERR_PARM    DC    C'Parm length > 6'
+TOO_MANY_V  DC    C'Too many volumes specified in SYSIN, change MAX_VOL/
+                  S'
+TOO_MANY_O  DC    C'Volume sort table size exceeded, change &&OUT_MAX'
+OVER_FLOW   DC    C'Total tracks greater than displayed'
+*
+NO_BIT28 DC  C'Extended attributes not supported for volume '
+VOL_SEL  DC  C'Volume selected'
+HEAD_L1  DC  C'Show online DASD volumes matching pattern=XXXXXX'
+HEAD_L2  DC  C'             ----------------- space in tracks ---------/
+               ---------'
+HEAD_L3  DC  C'volume       total        used        free      contig  /
+                   %free   num-files'
+HEAD_L4  DC  C'------       -----        ----        ----      ------  /
+                   -----   ---------'
+ED_PL3         DC    X'4020206B202120'
+ED_PL5         DC    X'402020206B2020206B202120'
+ED_PL4D2       DC    X'4020206B2021204B2020'
+*______________________________________________________________________
+*
+         LTORG
+*______________________________________________________________________
+*
+VTOCCHHR DC    XL5'0'                  address of first DSCB
+*______________________________________________________________________
+*
+LOW_VALUES     DC    60XL1'00'
+UCB_DETS DSECT
+         IEFUCBOB DEVCLAS=DA
+VOLUMES1 CSECT
+         CVT   DSECT=YES               CVT
+         DCBD
+         IHADCBE
+*______________________________________________________________________
+*
+         PRGESTAT
+         PRGEND
+         END

@@ -1,0 +1,71 @@
+//*******************************************************
+//DELETE  EXEC PGM=IDCAMS
+//SYSPRINT DD  DUMMY
+//SYSIN    DD  *
+ DELETE  (?????.ALL.VTOC.DETAILS)
+ DELETE  (?????.ALL.VTOC.DETAILS.F1)
+ DELETE  (?????.ALL.VTOC.DETAILS.F3)
+ DELETE  (?????.ALL.VTOC.DETAILS.F9)
+ SET MAXCC = 0
+//*******************************************************
+//* EXTRACT VTOC DATA FOR ALL ONLINE DISK PACKS
+//GETALL  EXEC PGM=VOLUMES1,COND=(0,NE)    ,PARM='CBT'
+//STEPLIB  DD  DISP=SHR,DSN=?????.LOADLIB
+//*        ONLY REPORT ON THESE VOLUMES
+//*        ALTERNATIVELY PARM='CBT' WILL LOOK AT CBT*** VOLUMES
+//*        NO PARM AND EMPTY SYSIN MEANS ALL VOLUMES
+//SYSIN    DD  *
+CBTCAT
+CBTCAU
+CBTOMV
+CBTU01
+CBTU02
+CBTU03
+CBTU04
+CBTU05
+CBTU06
+CBTU07
+//SYSOUT   DD  SYSOUT=*
+//OUTDETS  DD  DSN=?????.ALL.VTOC.DETAILS,
+//             DISP=(NEW,CATLG,DELETE),
+//             SPACE=(TRK,(3,3),RLSE),UNIT=3390
+//*******************************************************
+//* GET ALL THE FORMAT 1
+//GETF1   EXEC PGM=SORT,COND=(0,NE)
+//SORTIN   DD  DISP=SHR,DSN=?????.ALL.VTOC.DETAILS
+//SORTOUT  DD  DSN=?????.ALL.VTOC.DETAILS.F1,
+//             DISP=(NEW,CATLG,DELETE),
+//             SPACE=(TRK,(3,3),RLSE),UNIT=3390
+//SYSIN    DD  *
+*     EXTRACT ALL FORMAT 1 AND FORMAT 8 DSCB
+  INCLUDE COND=(59,1,CH,EQ,C'1',OR,59,1,CH,EQ,C'8')
+  SORT FIELDS=(1,6,CH,A,         * DISK VOLUME NAME
+               15,44,CH,A)       * DATASET NAME
+//SYSOUT   DD  SYSOUT=*
+//*******************************************************
+//* GET ALL THE FORMAT 3
+//GETF3   EXEC PGM=SORT,COND=(0,NE)
+//SORTIN   DD  DISP=SHR,DSN=?????.ALL.VTOC.DETAILS
+//SORTOUT  DD  DSN=?????.ALL.VTOC.DETAILS.F3,
+//             DISP=(NEW,CATLG,DELETE),
+//             SPACE=(TRK,(3,3),RLSE),UNIT=3390
+//SYSIN    DD  *
+*     EXTRACT ALL FORMAT 3 DSCB WITHOUT CONTINUATION
+  INCLUDE COND=(59,1,CH,EQ,C'3')
+  SORT FIELDS=(1,6,CH,A,         * DISK VOLUME NAME
+               7,5,BI,A)         * VTOC RECORD ID
+//SYSOUT   DD  SYSOUT=*
+//*******************************************************
+//* GET ALL THE FORMAT 9
+//GETF9   EXEC PGM=SORT,COND=(0,NE)
+//SORTIN   DD  DISP=SHR,DSN=?????.ALL.VTOC.DETAILS
+//SORTOUT  DD  DSN=?????.ALL.VTOC.DETAILS.F9,
+//             DISP=(NEW,CATLG,DELETE),
+//             SPACE=(TRK,(3,3),RLSE),UNIT=3390
+//SYSIN    DD  *
+*     EXTRACT ALL FORMAT 9 DSCB
+  INCLUDE COND=(59,1,CH,EQ,C'9')
+  SORT FIELDS=(1,6,CH,A,         * DISK VOLUME NAME
+               7,5,BI,A)         * VTOC RECORD ID
+//SYSOUT   DD  SYSOUT=*
+//*******************************************************

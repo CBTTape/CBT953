@@ -1,0 +1,15 @@
+//*******************************************************
+//* PRINT REPORT SPLIT BY VOLUME
+//PRINT   EXEC PGM=VOLUMES3,COND=(0,NE)
+//STEPLIB  DD  DISP=SHR,DSN=?????.LOADLIB
+//*   ONLY REPORT DATASETS WHICH ARE NOT CATALOGUED
+//*   AND IGNORE VTOC INDEXES 'SYS1.VTOCIX.??????'
+//SYSIN    DD  *
+*EXT=005
+CATALOGUED=N              INCLUDE NOT CATALOGUED ONLY
+XINDEX                    EXCLUDE VTOC INDEX FILES
+*RECFM=U
+*EXPIRE=1999/365
+//VOLIN    DD  DISP=SHR,DSN=?????.ALL.VTOC.DETAILS.MERGE.SORT
+//SYSOUT   DD  SYSOUT=*
+//*******************************************************

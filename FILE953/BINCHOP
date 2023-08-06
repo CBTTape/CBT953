@@ -1,0 +1,293 @@
+ TITLE 'BINCHOP - DO A BINARY CHOP TO SELECT RECORDS'
+ PRINT GEN
+*______________________________________________________________________
+*
+*    This program compares the contents of an input dataset with a
+*    list of values that are specified in another dataset. A binary
+*    chop is used to do the comparison. Selected records are output.
+*
+*    Example of running this program
+*      //SYSIN    DD  *
+*      BINCHOP MATCH                          or NOMATCH
+*      BINCHOP RECPOS=00007
+*      BINCHOP COMLEN=00006
+*      //TABLE    DD  *
+*      ABCDEF
+*      ABCDEG
+*      //DATAIN   DD  DISP=SHR,DSN=????.????.DATAIN
+*      //DATAOUT  DD  DSN=????.????.DATAOUT,
+*      //             DISP=(NEW,CATLG,DELETE),
+*      //             SPACE=(TRK,(1,1),RLSE),UNIT=3390
+*      //SYSOUT   DD  SYSOUT=*
+*
+*    This program reads cards from SYSIN specifying the position and
+*    length for the binary test, for variable length records do NOT
+*    include the RDW in RECPOS.
+*    Next TABLE is read and all values are read into obtained memory.
+*
+*    DDN=DATAIN is then read and each record is compared with the
+*    in core table to see if they match at the position in parameter.
+*    If they match then the record may be output depending on the
+*    match/nomatch switch set by parameter card. Records that pass
+*    the test are written to DDN=DATAOUT.
+*    Informational messages are written to SYSOUT.
+*______________________________________________________________________
+*
+BINCHOP  PRGDEF FSEG=MAIN_BIT,RMODE=24
+*
+EOF_DATAIN     DS    CL1
+EOF_SYSIN      DS    CL1
+EOF_TABLE      DS    CL1
+*
+SYSIN_REC      DS    CL80
+SYSOUT_REC     DS    CL80
+*
+IN       USING IHADCB,DATAIN
+OUT      USING IHADCB,DATAOUT
+*
+         PRGEDEF
+*
+ SEGS MAIN_BIT
+*
+   SEGDO INIT_PROGRAM
+*
+   SEGDO OPEN_DATAIN
+*
+   MVC   OUT.DCBRECFM,IN.DCBRECFM      COPY RECORD FORMAT
+   MVC   OUT.DCBLRECL,IN.DCBLRECL           RECORD LENGTH
+   MVC   OUT.DCBBLKSI,IN.DCBBLKSI           BLOCK SIZE
+*
+   SEGDO OPEN_DATAOUT
+*
+   DO INF
+     SEGDO GET_DATAIN
+   DOEXIT (CLI,EOF_DATAIN,EQ,C'Y')
+     LR    R8,R1                       COPY RECORD ADDRESS
+     LR    R6,R1                       COPY RECORD ADDRESS
+     AP    READ_COUNT,=P'1'
+     IF (TM,IN.DCBRECFM,DCBRECV,NZ)    IF VARIABLE LENGTH
+       LA    R6,4(,R6)                 POINT PAST RDW
+     ENDIF
+*
+     MVC   INPUT_REC,0(R6)             COPY TO INPUT_REC
+     AH    R6,REC_DISP                 POINT TO DISPLACEMENT IN RECORD
+     MVC   TEST_FIELD,0(R6)            COPY TO TEST AREA
+*
+     SEGDO BINARY_CHOP
+*
+     IF (CLI,PASSED_TEST,EQ,C'Y'),AND,(CLI,MATCH_PROC,EQ,C'Y')
+       SEGDO PUT_DATAOUT
+       AP    WRITE_COUNT,=P'1'
+     ELSEIF (CLI,PASSED_TEST,EQ,C'N'),AND,(CLI,MATCH_PROC,EQ,C'N')
+       SEGDO PUT_DATAOUT
+       AP    WRITE_COUNT,=P'1'
+     ENDIF
+   ENDDO
+*
+   SEGDO CLOSE_DATAIN
+   SEGDO CLOSE_DATAOUT
+*
+   SEGDO TERM_PROGRAM
+*
+ SEGE MAIN_BIT
+*______________________________________________________________________
+*
+ SEGS BINARY_CHOP
+*
+   MVI   PASSED_TEST,C'N'
+   MVC   CLC+1(1),COM_COMPARE+1        set instruction
+*
+   LA    R1,1                          start of first entry
+   L     R2,COM_COUNT                  number of entries
+   L     R5,TABLE_ANCHOR               address of first entry
+   DO UNTIL=(CR,R1,H,R2)
+     LR    R14,R1
+     AR    R14,R2
+     SRA   R14,1
+     LR    R4,R14
+     BCTR  R4,0
+     MH    R4,COM_LEN                  length of each entry
+     AR    R4,R5                       start position of table
+CLC  CLC   0(0,R4),TEST_FIELD          match on test field
+     BNE   NOT_GOT
+     MVI   PASSED_TEST,C'Y'
+   DOEXIT (CLI,PASSED_TEST,EQ,C'Y')
+NOT_GOT    DS    0H
+     BH    WAS_HIGH
+     LA    R1,1(,R14)
+     B     AGAIN
+WAS_HIGH   DS    0H
+     LR    R2,R14
+     BCTR  R2,0
+AGAIN      DS    0H
+   ENDDO
+*
+ SEGE BINARY_CHOP
+*______________________________________________________________________
+*
+ SEGS INIT_PROGRAM
+*
+   SEGDO OPEN_SYSOUT
+   SEGDO OPEN_SYSIN
+   DO INF
+     SEGDO GET_SYSIN
+   DOEXIT (CLI,EOF_SYSIN,EQ,C'Y')
+     IF (CLI,SYSIN_REC,NE,C'*')
+       MVC   SYSOUT_REC,SYSIN_REC
+       SEGDO PUT_SYSOUT
+       IF (CLC,=C'BINCHOP MATCH ',EQ,SYSIN_REC)
+         MVI   MATCH_PROC,C'Y'
+       ELSEIF (CLC,=C'BINCHOP NOMATCH ',EQ,SYSIN_REC)
+         MVI   MATCH_PROC,C'N'
+       ELSEIF (CLC,=C'BINCHOP RECPOS=',EQ,SYSIN_REC)
+         PACK  DOUB_WORD,SYSIN_REC+15(5)
+         CVB   R1,DOUB_WORD
+         BCTR  R1,0
+         STH   R1,REC_DISP
+       ELSEIF (CLC,=C'BINCHOP COMLEN=',EQ,SYSIN_REC)
+         PACK  DOUB_WORD,SYSIN_REC+15(5)
+         CVB   R1,DOUB_WORD
+         STH   R1,COM_LEN
+         BCTR  R1,0
+         STH   R1,COM_COMPARE
+       ELSE
+         MVC   SYSOUT_REC(30),=CL30'Invalid parameter'
+         SEGDO PUT_SYSOUT
+         PRGQUIT RC=8
+       ENDIF
+     ENDIF
+   ENDDO
+   SEGDO CLOSE_SYSIN
+*
+   SEGDO LOAD_LOOKUP_TABLE
+*
+ SEGE INIT_PROGRAM
+*______________________________________________________________________
+*
+ SEGS TERM_PROGRAM
+*
+   L     R2,TABLE_LENGTH
+   L     R1,TABLE_ANCHOR
+   STORAGE RELEASE,LENGTH=(R2),ADDR=(R1)
+*
+   SEGDO PUT_SYSOUT
+*
+   MVC   SYSOUT_REC(L'ED_PAT),ED_PAT
+   ED    SYSOUT_REC(L'ED_PAT),READ_COUNT
+   MVC   SYSOUT_REC+L'ED_PAT+2(20),=CL20'Total records read'
+   SEGDO PUT_SYSOUT
+*
+   MVC   SYSOUT_REC(L'ED_PAT),ED_PAT
+   ED    SYSOUT_REC(L'ED_PAT),WRITE_COUNT
+   MVC   SYSOUT_REC+L'ED_PAT+2(24),=CL24'Total records written'
+   SEGDO PUT_SYSOUT
+   SEGDO PUT_SYSOUT
+   SEGDO CLOSE_SYSOUT
+*
+ SEGE TERM_PROGRAM
+*______________________________________________________________________
+*
+ SEGS LOAD_LOOKUP_TABLE
+*
+   SEGDO OPEN_TABLE
+   XR    R5,R5                         initialise count
+   DO INF
+     SEGDO GET_TABLE
+   DOEXIT (CLI,EOF_TABLE,EQ,C'Y')
+     LA    R5,1(,R5)                   increment record count
+   ENDDO
+   SEGDO CLOSE_TABLE
+   ST    R5,COM_COUNT
+*
+   MH    R5,COM_LEN
+   ST    R5,TABLE_LENGTH
+   STORAGE OBTAIN,LENGTH=(R5),LOC=31
+   ST    R1,TABLE_ANCHOR
+*
+   SEGDO OPEN_TABLE
+   L     R6,TABLE_ANCHOR               point to table
+   DO INF
+     SEGDO GET_TABLE
+   DOEXIT (CLI,EOF_TABLE,EQ,C'Y')
+     LR    R4,R1                       copy record address
+     LH    R1,COM_COMPARE
+     IF (EX,R1,COMP_REC,GT)
+       MVC   SYSOUT_REC(L'NOT_SORTED),NOT_SORTED
+       SEGDO PUT_SYSOUT
+       PRGQUIT RC=16
+     ENDIF
+     EX    R1,COPY_REC
+     EX    R1,COPY_TEST
+     AH    R6,COM_LEN
+   ENDDO
+   SEGDO CLOSE_TABLE
+*
+   L     R1,COM_COUNT
+   CVD   R1,DOUB_WORD
+   MVC   SYSOUT_REC(L'ED_PAT),ED_PAT
+   ED    SYSOUT_REC(L'ED_PAT),DOUB_WORD
+   MVC   SYSOUT_REC+L'ED_PAT+2(24),=CL24'Total loaded into table'
+   SEGDO PUT_SYSOUT
+*
+ SEGE LOAD_LOOKUP_TABLE
+*______________________________________________________________________
+*
+ PRGDCBI DCB=SYSIN,EOF=EOF_SYSIN,REC=SYSIN_REC
+*
+ PRGDCBI DCB=TABLE,EOF=EOF_TABLE       generate code for TABLE
+*
+ PRGDCBI DCB=DATAIN,EOF=EOF_DATAIN     generate code for DATAIN
+*
+ PRGDCBO DCB=DATAOUT,REC=(R8)          generate code for DATAOUT
+*
+ PRGDCBO DCB=SYSOUT,REC=SYSOUT_REC     generate code for SYSOUT
+*______________________________________________________________________
+*
+               PRGSTAT
+*
+COMP_REC   CLC   LAST_VAL(0),0(R4)
+COPY_REC   MVC   0(0,R6),0(R4)
+COPY_TEST  MVC   LAST_VAL(0),0(R4)
+*
+               DS    0D
+               DC    CL32'INPUT RECORD '
+INPUT_REC      DS    CL80
+TEST_FIELD     DS    CL80
+READ_COUNT     DC    PL8'0'
+WRITE_COUNT    DC    PL8'0'
+TABLE_ANCHOR   DS    F
+TABLE_LENGTH   DS    F
+COM_COUNT      DS    F
+COM_LEN        DS    H
+COM_COMPARE    DS    H
+REC_DISP       DS    H
+MATCH_PROC     DS    CL1
+PASSED_TEST    DS    CL1
+*
+NOT_SORTED     DC    C'Input table is not sorted'
+LAST_VAL       DS    CL256
+SPACES         DC    CL80' '
+*
+ED_PAT         DC    X'402020206B2020206B2020206B2020206B202120'
+*______________________________________________________________________
+*
+TABLE    DCB   DDNAME=TABLE,DSORG=PS,MACRF=(GL),EODAD=END_TABLE
+SYSIN    DCB   DDNAME=SYSIN,MACRF=(GM),DSORG=PS,EODAD=END_SYSIN
+SYSOUT   DCB   DDNAME=SYSOUT,MACRF=(PM),DSORG=PS,RECFM=FB,LRECL=80
+DATAIN   DCB   DDNAME=DATAIN,MACRF=(GL),DSORG=PS,EODAD=END_DATAIN
+DATAOUT  DCB   DDNAME=DATAOUT,MACRF=(PM),DSORG=PS
+*
+         PUSH  PRINT,NOPRINT
+         PRINT NOGEN
+         DCBD  DSORG=QS,DEVD=DA
+         POP   PRINT,NOPRINT
+*
+BINCHOP  CSECT
+*______________________________________________________________________
+*
+         LTORG
+*______________________________________________________________________
+*
+         PRGESTAT
+         PRGEND
+         END

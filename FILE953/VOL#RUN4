@@ -1,0 +1,60 @@
+//* IDENTIFY DUPLICATE DATASETS
+//*******************************************************
+//* GET ALL DATASET NAMES AND SUM DUPLICATES TOGETHER
+//SORT1   EXEC PGM=SORT,COND=(0,NE)
+//SORTIN   DD  DISP=SHR,DSN=?????.ALL.VTOC.DETAILS.MERGE.SORT
+//SORTOUT  DD  DSN=&&TEMP1,
+//             DISP=(NEW,CATLG,DELETE),
+//             SPACE=(TRK,(3,3),RLSE),UNIT=3390
+//SYSIN    DD  *
+  INREC FIELDS=(7,44,X'00001C')  * DATASET NAME PLUS COUNT FIELD
+  SORT FIELDS=(1,44,CH,A)        * DATASET NAME
+  SUM  FIELDS=(45,3,PD)          * COUNT OCCURENCES
+//SYSOUT   DD  SYSOUT=*
+//*******************************************************
+//* JUST INCLUDE THOSE THAT ARE DUPLICATES
+//SORT2   EXEC PGM=SORT,COND=(0,NE)
+//SORTIN   DD  DISP=SHR,DSN=&&TEMP1
+//SORTOUT  DD  DSN=&&TEMP2,
+//             DISP=(NEW,CATLG,DELETE),
+//             SPACE=(TRK,(3,3),RLSE),UNIT=3390
+//SYSIN    DD  *
+  INCLUDE COND=(45,3,PD,GT,1)    * IF COUNT > 1
+  INREC FIELDS=(1,44)            * DATASET NAME
+  SORT FIELDS=COPY
+//SYSOUT   DD  SYSOUT=*
+//*******************************************************
+//* COPY ORIGINAL FILE IF PRESENT IN DUPLICATES LIST
+//* E35TABL CHECKS IF INPUT DSN IS IN TABLIN
+//SORT3   EXEC PGM=SORT,COND=(0,NE)
+//STEPLIB  DD  DISP=SHR,DSN=?????.LOADLIB
+//SORTIN   DD  DISP=SHR,DSN=?????.ALL.VTOC.DETAILS.MERGE.SORT
+//TABLIN   DD  DISP=SHR,DSN=&&TEMP2
+//SORTOUT  DD  DSN=&&TEMP3,
+//             DISP=(NEW,CATLG,DELETE),
+//             SPACE=(TRK,(3,3),RLSE),UNIT=3390
+//SYSIN    DD  *
+  SORT FIELDS=(7,44,CH,A,              * DATASET NAME
+               54,1,CH,D,              * CATALOGUED
+               1,6,CH,A)               * VOLUME NAME
+  MODS    E15=(E35TABL,1048576,,N)
+//E35TABL  DD  *
+00007,044,IN                           * POSITION 7 LENGTH OF 44
+//SYSOUT   DD  SYSOUT=*
+//*******************************************************
+//PRINT   EXEC PGM=VOLUMES3,COND=(0,NE)
+//STEPLIB  DD  DISP=SHR,DSN=?????.LOADLIB
+//SYSIN    DD  *
+PROCPDS                     OUTPUT DIRECTORY BLOCK DETAILS
+*EXT=NNN                    MINIMUM NUMBER OF EXTENTS
+*CAT=N                      ONLY SHOW UNCATALOGUED DATASETS
+*RECFM=???                  REQUIRED RECORD FORMAT
+*EXPIRE=????????            EXPIRY DATE
+*XINDEX                     EXCLUDE VTOC INDEX FILES
+NOGROUP
+*NOTOTALS
+*NOHEADER
+//VOLIN    DD  DISP=SHR,DSN=&&TEMP3
+//SYSOUT   DD  SYSOUT=*
+//VOLOUT   DD  SYSOUT=*
+//*******************************************************

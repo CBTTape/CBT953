@@ -1,0 +1,42 @@
+ /* REXX */
+
+ MY_STEM = "WANG"
+ AB_END  = "N"
+ high_rc   = 0
+
+ DROP WANG.
+
+ RE_SPONSE = RXCHKRC(MY_STEM)
+
+ IF RE_SPONSE /= 0 THEN DO
+    SAY RE_SPONSE
+    EXIT
+ END
+
+ SAY 'Result of previous job steps'
+ SAY "     Jobstep  Procstep Program  RetCode  Parm"
+ DO LO_OP_R = 1 TO WANG.0
+    SAY FORMAT(LO_OP_R,4) WANG.LO_OP_R
+    step_result = substr(WANG.LO_OP_R,28,8)
+    if step_result /= 'BYPASSED' then do
+       if step_result /= 'SKIPPED ' then do
+          step_res    = substr(WANG.LO_OP_R,28,3)
+          rc_step     = substr(WANG.LO_OP_R,31,5)
+          if step_res = 'AB=' then DO
+
+             abend_code = substr(WANG.LO_OP_R,31,5)
+             AB_END  = "Y"
+             END
+          else high_rc = Max(high_rc,rc_step)
+       end
+    end
+ END
+
+ DROP WANG.
+
+ If AB_END = "Y" Then
+    Say "Highest RC - ABEND" abend_code "(last abend)"
+ else
+    Say "Highest RC =" Right(high_rc,5,0)
+
+ EXIT
