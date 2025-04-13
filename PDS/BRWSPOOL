@@ -1,0 +1,556 @@
+ TITLE 'BRWSPOOL - OUTPUT JOB SUMMARY OF CONDITION CODES'
+ PRINT GEN
+*______________________________________________________________________
+*
+* This module reads JESYSMSG for the job it is running in and finds
+* the step condition codes for all previous steps and then
+* outputs them in a nice box.
+* This should be the last step in the job so it can report on
+* all preceding steps. It does not report on itself as it
+* has not yet finished. Use COND=EVEN so that the step executes even
+* if a previous step has abended.
+*
+* //SUMMARY EXEC PGM=BRWSPOOL,COND=EVEN
+* //STEPLIB  DD  DISP=SHR,DSN=load.library
+* //SYSOUT   DD  SYSOUT=*                 <== required
+*______________________________________________________________________
+*
+BRWSPOOL PRGDEF FSEG=MAIN_PART,RMODE=24
+*
+IN_REC         DS    CL256
+T_STAMP        DS    CL14
+STEP_NAME      DS    CL8
+PROC_NAME      DS    CL8
+COND_CODE      DS    CL9
+CPU_TIME       DS    CL8
+NR_REASON      DS    CL2
+IEF032I_MESS_A DS    CL80
+IEF032I_MESS_B DS    CL80
+IEF142I_MESS   DS    CL80
+IEF202I_MESS   DS    CL80
+IEF374I_MESS   DS    CL80
+IEF472I_MESS   DS    CL80
+E_O_F          DS    C
+*
+         PRGEDEF
+         USING IHADCB,SYSIN            map DCBD over SYSIN
+*______________________________________________________________________
+*
+ SEGS MAIN_PART
+*
+   SEGDO DYNALLOC_JESYSMSG             allocate JESYSMSG to SYSIN
+*
+   MVC   MESS_TXT,PLUS_LINE            output start banner
+   SEGDO WRITE_LOG
+   MVC   MESS_TXT,SUMMARY_START
+   SEGDO WRITE_LOG
+   MVC   MESS_TXT,PLUS_LINE
+   SEGDO WRITE_LOG
+*
+   SEGDO OPEN_SYSIN
+*
+   DO INF
+     SEGDO GET_SYSIN
+   DOEXIT (CLI,E_O_F,EQ,C'Y')
+     SEGDO PROCESS_RECORD
+   ENDDO
+*
+   SEGDO CLOSE_SYSIN
+*
+   MVC   MESS_TXT,PLUS_LINE            output end banner
+   SEGDO WRITE_LOG
+   MVC   MESS_TXT,SUMMARY_END
+   SEGDO WRITE_LOG
+   MVC   MESS_TXT,PLUS_LINE
+   SEGDO WRITE_LOG
+*
+   SEGDO RELEASE_JESYSMSG
+*
+ SEGE MAIN_PART
+*______________________________________________________________________
+*
+ SEGS DYNALLOC_JESYSMSG
+*
+*    names of temporary dataset in JES2 are:-
+*
+*    userid.jobname.JOBnnnnn.Dnnnnnnn.?
+*    1234567890123456789012345678901234567890
+*    ABCDEFGH.IJKLMNOP.JOBnnnnn.Dnnnnnnn.?
+*    A.I.JOBnnnnn.Dnnnnnnn.?
+*
+*    userid and jobname can be 1 to 8 characters (as of z/OS 2.3)
+*    so find the third '.' and add JESYSMSG to the end
+*    then dynamically allocate the resulting dataset name.
+*    ABCDEFGH.IJKLMNOP.JOBnnnnn.JESYSMSG
+*    the other datasets are
+*    ABCDEFGH.IJKLMNOP.JOBnnnnn.JESMSGLG
+*    ABCDEFGH.IJKLMNOP.JOBnnnnn.JESJCL
+*
+   RDJFCB SYSOUT
+   MVC   KEYADSN(28),JFCBDSNM          more than enough to work with
+   LA    R14,KEYADSN                   point to DSN
+   LA    R15,L'KEYADSN                 get length
+   XR    R1,R1                         clear '.' counter
+   DO FROM=(R15)
+   DOEXIT (CHI,R1,EQ,3)                quit when counter is 3
+     IF (CLI,0(R14),EQ,C'.')
+       LA    R1,1(,R1)                 increment counter
+     ENDIF
+     LA    R14,1(,R14)
+   ENDDO
+   IF (LTR,R15,R15,Z)                  did not find three '.'
+     MVC   MESS_TXT(25),=CL25'BRWSPOOL - parsing failed'
+     SEGDO WRITE_LOG
+     PRGQUIT RC=16
+   ENDIF
+   MVC   0(17,R14),=CL17'JESYSMSG'     tack JESYSMSG on the end
+*
+   USING S99RBP,R4               make S99RBP DSECT addressible
+   USING S99RB,R3                make RB DSECT addressible
+   L     R4,STORADR
+   LA    R3,S99RBPTR+4           point 4 bytes after S99RBPTR
+   ST    R3,S99RBPTR             make 'RBPTR' point to RB
+   OI    S99RBPTR,S99RBPND       set high-order bit on in RBPTR
+   XC    S99RB(RBLEN),S99RB      zeroise complete 'RB'
+   MVI   S99RBLN,RBLEN           put length of RB in length field
+   MVC   S99ERROR,=H'0'
+   MVC   S99INFO,=H'0'
+   LA    R2,24(R4)               start of text address pointers
+   ST    R2,S99TXTPP
+   MVI   S99VERB,S99VRBAL        set allocate verb
+   XR    R1,R1                   clear R1 prior to access
+   EPAR  R1                      go get ASID
+   STH   R1,BTOKASID
+   LA    R1,KEYA
+   ST    R1,0(R2)                store key address
+   LA    R1,KEYADS
+   ST    R1,4(R2)                store key address
+   LA    R1,KEYADISP
+   ST    R1,8(R2)                store key address
+   LA    R1,KEYSSID
+   ST    R1,12(R2)               store key address
+   LA    R1,KEYTOKEN
+   ST    R1,16(R2)               store key address
+   OI    16(R2),X'80'            indicate end of address list
+   L     R1,STORADR              set R1 to addr. of RB pointer
+   DYNALLOC
+
+   IF (LTR,R15,R15,NZ)
+     MVC   MESS_TXT(14),=CL14'DYNALLOC   RC='
+     XUNPK (R15),,MESS_TXT+14
+     XUNPK S99ERROR,2,MESS_TXT+24
+     XUNPK S99ERROR,2,MESS_TXT+30
+     SEGDO WRITE_LOG
+     MVC   MESS_TXT(8),KEYADDNM
+     MVC   MESS_TXT+10(44),KEYADSN
+     SEGDO WRITE_LOG
+     PRGQUIT RC=16
+   ENDIF
+   DROP  R4
+   DROP  R3
+*
+ SEGE DYNALLOC_JESYSMSG
+*______________________________________________________________________
+*
+ SEGS RELEASE_JESYSMSG
+*
+   USING S99RBP,R4               make S99RBP dsect addressible
+   USING S99RB,R3                make RB dsect addressible
+   L     R4,STORADR
+   LA    R3,S99RBPTR+4           point 4 bytes after s99rbptr
+   ST    R3,S99RBPTR             make 'RBPTR' point to RB
+   OI    S99RBPTR,S99RBPND       set on high-order bit in RBPTR
+   XC    S99RB(RBLEN),S99RB      zeroise complete 'RB'
+   MVI   S99RBLN,RBLEN           put length of RB in length field
+   MVC   S99ERROR,=H'0'
+   MVC   S99INFO,=H'0'
+   LA    R2,24(R4)               start of text address pointers
+   ST    R2,S99TXTPP
+   MVI   S99VERB,S99VRBUN        set un-allocate verb
+   LA    R1,KEYA
+   ST    R1,0(R2)                store key address
+   LA    R1,KEYADS
+   ST    R1,4(R2)                store key address
+   OI    4(R2),X'80'             indicate end of address list
+   L     R1,STORADR              set R1 to addr. of RB pointer
+   DYNALLOC
+
+   IF (LTR,R15,R15,NZ)
+     MVC   MESS_TXT(14),=CL14'UN-ALLOC   RC='
+     XUNPK (R15),4,MESS_TXT+14
+     XUNPK S99ERROR,2,MESS_TXT+24
+     XUNPK S99ERROR,2,MESS_TXT+30
+     SEGDO WRITE_LOG
+     MVC   MESS_TXT(8),KEYADDNM
+     MVC   MESS_TXT+10(44),KEYADSN
+     SEGDO WRITE_LOG
+     PRGQUIT RC=16
+   ENDIF
+   DROP  R4
+   DROP  R3
+*
+ SEGE RELEASE_JESYSMSG
+*______________________________________________________________________
+*
+ SEGS PROCESS_RECORD
+*
+*  it seems that IEF142I is always there but sometimes IEF374I is
+*  present and sometimes IEF032I which is in multiple lines,
+*  so cope with either
+*
+   IF (CLC,=C'IEF142I',EQ,IN_REC+1)        condition code
+     MVC   IEF142I_MESS(60),IN_REC+9
+   ELSEIF (CLC,=C'IEF202I',EQ,IN_REC+1)    step not run
+     MVC   IEF202I_MESS(60),IN_REC+9
+     MVC   NR_REASON,=C'CC'
+     SEGDO FORMAT_IEF202I
+   ELSEIF (CLC,=C'IEF472I',EQ,IN_REC+1)    step abend
+     MVC   IEF472I_MESS(70),IN_REC+9
+   ELSEIF (CLC,=C'IEF374I',EQ,IN_REC+1)    execution time
+     MVC   IEF374I_MESS(60),IN_REC+9
+     IF (CLC,IEF142I_MESS,GT,SPACES)
+       SEGDO FORMAT_OUTPUT
+     ELSEIF (CLC,IEF472I_MESS,GT,SPACES)
+       SEGDO FORMAT_IEF472I
+     ENDIF
+     MVC   IEF142I_MESS,SPACES
+     MVC   IEF472I_MESS,SPACES
+     MVC   IEF374I_MESS,SPACES
+   ELSEIF (CLC,=C'IEF032I',EQ,IN_REC+1)    execution time
+     MVC   IEF032I_MESS_A(60),IN_REC+9
+   ELSEIF (CLC,IEF032I_MESS_A,GT,SPACES)
+     MVC   IEF032I_MESS_B(60),IN_REC+9
+     IF (CLC,IEF142I_MESS,GT,SPACES)
+       SEGDO FORMAT_OUTPUT
+     ELSEIF (CLC,IEF472I_MESS,GT,SPACES)
+       SEGDO FORMAT_IEF472I
+     ENDIF
+     MVC   IEF142I_MESS,SPACES
+     MVC   IEF472I_MESS,SPACES
+     MVC   IEF032I_MESS_A,SPACES
+     MVC   IEF032I_MESS_B,SPACES
+   ENDIF
+*
+ SEGE PROCESS_RECORD
+*______________________________________________________________________
+*
+ SEGS FORMAT_OUTPUT
+*
+   LA    R4,IEF142I_MESS
+   SEGDO FORMAT_PROC_STEP
+   SEGDO FIND_COND_CODE
+   IF (LTR,R5,R5,Z)
+     MVC   MESS_TXT(20),=CL20'FAILED 4'
+     SEGDO WRITE_LOG
+     SEGQUIT
+   ENDIF
+   LA    R4,10(,R4)                    point after 'COND CODE '
+   MVC   COND_CODE(4),=C'Cond'         insert only 'Cond'
+   MVC   COND_CODE+5(4),0(R4)          copy value
+   IF (CLC,=C'0000',EQ,COND_CODE+5)    if 0000
+     MVC   COND_CODE+5(3),=C'---'      make it easier to see '---0'
+   ELSEIF (CLC,=C'0004',EQ,COND_CODE+5) if 0004
+     MVC   COND_CODE+5(2),=C'---'      make it easier to see '--04'
+   ELSEIF (CLC,=C'0008',EQ,COND_CODE+5) if 0008
+     MVI   COND_CODE+5,C'-'            make it easier to see '-008'
+   ENDIF
+*
+   SEGDO FORMAT_IEF374
+*
+   IF (CLC,PROC_NAME,GT,SPACES)
+     MVC   MESS_TXT+1(8),PROC_NAME
+     MVC   MESS_TXT+11(8),STEP_NAME
+   ELSE
+     MVC   MESS_TXT+1(8),STEP_NAME
+   ENDIF
+   MVC   MESS_TXT+21(L'COND_CODE),COND_CODE
+   MVC   MESS_TXT+33(L'CPU_TIME),CPU_TIME
+   MVC   MESS_TXT+44(L'T_STAMP),T_STAMP
+   SEGDO WRITE_LOG
+   MVC   STEP_NAME,SPACES
+   MVC   PROC_NAME,SPACES
+*
+ SEGE FORMAT_OUTPUT
+*______________________________________________________________________
+*
+ SEGS FORMAT_IEF202I
+*
+   LA    R4,IEF202I_MESS
+   SEGDO FORMAT_PROC_STEP
+   IF (CLC,PROC_NAME,GT,SPACES)
+     MVC   MESS_TXT+1(8),PROC_NAME
+     MVC   MESS_TXT+11(8),STEP_NAME
+   ELSE
+     MVC   MESS_TXT+1(8),STEP_NAME
+   ENDIF
+   MVC   MESS_TXT+21(L'NOT_RUN),NOT_RUN
+   MVC   MESS_TXT+21+L'NOT_RUN+1(L'NR_REASON),NR_REASON
+   SEGDO WRITE_LOG
+*
+ SEGE FORMAT_IEF202I
+*______________________________________________________________________
+*
+ SEGS FORMAT_IEF472I
+*
+   LA    R4,IEF472I_MESS
+   SEGDO FORMAT_PROC_STEP
+   SEGDO FIND_SYSTEM
+   IF (CLC,PROC_NAME,GT,SPACES)
+     MVC   MESS_TXT+1(8),PROC_NAME
+     MVC   MESS_TXT+11(8),STEP_NAME
+   ELSE
+     MVC   MESS_TXT+1(8),STEP_NAME
+   ENDIF
+   IF (CLC,=C'000',NE,7(R4))
+     MVI   MESS_TXT+26,C'S'            system abend
+     MVC   MESS_TXT+27(3),7(R4)
+   ELSE
+     MVI   MESS_TXT+26,C'U'            user abend
+     MVC   MESS_TXT+27(4),16(R4)
+   ENDIF
+*
+   SEGDO FORMAT_IEF374
+   MVC   MESS_TXT+33(L'CPU_TIME),CPU_TIME
+   MVC   MESS_TXT+44(L'T_STAMP),T_STAMP
+*
+   SEGDO WRITE_LOG
+*
+ SEGE FORMAT_IEF472I
+*______________________________________________________________________
+*
+ SEGS FORMAT_PROC_STEP
+*
+   LA    R5,60
+   SEGDO FIND_BLANK
+   IF (LTR,R5,R5,Z)
+     MVC   MESS_TXT(20),=CL20'FAILED 1'
+     SEGDO WRITE_LOG
+     SEGQUIT
+   ENDIF
+   LA    R4,1(,R4)
+   LA    R8,0(,R4)
+   SEGDO FIND_BLANK
+   IF (LTR,R5,R5,Z)
+     MVC   MESS_TXT(20),=CL20'FAILED 2'
+     SEGDO WRITE_LOG
+     SEGQUIT
+   ENDIF
+   LR    R1,R4
+   SR    R1,R8
+   BCTR  R1,0
+   EX    R1,MVC_STEPNAME
+   LA    R4,1(,R4)
+   LA    R8,0(,R4)
+   IF (CLI,0(R8),NE,C'-')
+     SEGDO FIND_BLANK
+     IF (LTR,R5,R5,Z)
+       MVC   MESS_TXT(20),=CL20'FAILED 3'
+       SEGDO WRITE_LOG
+       SEGQUIT
+     ENDIF
+     LR    R1,R4
+     SR    R1,R8
+     BCTR  R1,0
+     EX    R1,MVC_PROCNAME
+   ENDIF
+*
+ SEGE FORMAT_PROC_STEP
+*______________________________________________________________________
+*
+ SEGS FORMAT_IEF374
+*
+   IF (CLC,IEF374I_MESS,GT,SPACES)
+     MVC   T_STAMP(4),IEF374I_MESS+20
+     MVI   T_STAMP+4,C'.'
+     MVC   T_STAMP+5(6),IEF374I_MESS+24
+     MVI   T_STAMP+8,C' '
+     MVI   T_STAMP+11,C':'
+     MVC   T_STAMP+12(2),IEF374I_MESS+30
+     MVC   CPU_TIME(2),IEF374I_MESS+39
+     MVI   CPU_TIME+2,C':'
+     MVC   CPU_TIME+3(5),IEF374I_MESS+45
+   ELSE
+     MVC   T_STAMP(4),IEF032I_MESS_A+20
+     MVI   T_STAMP+4,C'.'
+     MVC   T_STAMP+5(6),IEF032I_MESS_A+24
+     MVI   T_STAMP+8,C' '
+     MVI   T_STAMP+11,C':'
+     MVC   T_STAMP+12(2),IEF032I_MESS_A+30
+     MVC   CPU_TIME(2),IEF032I_MESS_B+15
+     MVI   CPU_TIME+2,C':'
+     MVC   CPU_TIME+3(5),IEF032I_MESS_B+23
+     IF (CLI,CPU_TIME,EQ,C'0')
+       MVI   CPU_TIME,C' '
+     ENDIF
+   ENDIF
+*
+ SEGE FORMAT_IEF374
+*______________________________________________________________________
+*
+ SEGS FIND_BLANK
+*
+   IF (LTR,R5,R5,NZ)
+     DO FROM=(R5)
+     DOEXIT (CLI,0(R4),EQ,C' ')
+       LA    R4,1(,R4)
+     ENDDO
+   ENDIF
+*
+ SEGE FIND_BLANK
+*______________________________________________________________________
+*
+ SEGS FIND_CHAR
+*
+   IF (LTR,R5,R5,NZ)
+     DO FROM=(R5)
+     DOEXIT (CLI,0(R4),EQ,C' ')
+       LA    R4,1(,R4)
+     ENDDO
+   ENDIF
+*
+ SEGE FIND_CHAR
+*______________________________________________________________________
+*
+ SEGS FIND_COND_CODE
+*
+   IF (LTR,R5,R5,NZ)
+     DO FROM=(R5)
+     DOEXIT (CLC,=C'COND CODE',EQ,0(R4))
+       LA    R4,1(,R4)
+     ENDDO
+   ENDIF
+*
+ SEGE FIND_COND_CODE
+*______________________________________________________________________
+*
+ SEGS FIND_SYSTEM
+*
+   IF (LTR,R5,R5,NZ)
+     DO FROM=(R5)
+     DOEXIT (CLC,=C'SYSTEM=',EQ,0(R4))
+       LA    R4,1(,R4)
+     ENDDO
+   ENDIF
+*
+ SEGE FIND_SYSTEM
+*______________________________________________________________________
+*
+ SEGS WRITE_LOG
+*
+   WTOX
+*
+ SEGE WRITE_LOG
+*______________________________________________________________________
+*
+ PRGDCBI DCB=SYSIN,EOF=E_O_F,V2F=IN_REC
+*______________________________________________________________________
+*
+         PRGSTAT
+*
+PLUS_LINE      DC    60C'+',20C' '
+SUMMARY_START  DC    C' JOB  SUMMARY        '
+               DC    C'JOB  SUMMARY        '
+               DC    C'JOB  SUMMARY',27C' '
+SUMMARY_END    DC    C' SUMMARY  END        '
+               DC    C'SUMMARY  END        '
+               DC    C'SUMMARY  END',27C' '
+NOT_RUN        DC    C'Not run'
+SPACES         DC    CL80' '
+MVC_STEPNAME   MVC   STEP_NAME(0),0(R8)
+MVC_PROCNAME   MVC   PROC_NAME(0),0(R8)
+DYNA_THIS_DATASET    DC    CL44' '
+*
+SYSIN    DCB   DSORG=PS,DDNAME=BRWSPDCB,MACRF=(GL),EODAD=END_SYSIN
+*
+*  SYSOUT is defined only for RDJFCB to get userid, jobname and jobid
+*  so it should be in the JCL as SYSOUT=*
+*
+SYSOUT   DCB   DSORG=PS,DDNAME=SYSOUT,MACRF=(PM),RECFM=FB,LRECL=80,    /
+               EXLST=LIST1
+LIST1    DS    0F
+         DC    X'87',AL3(MY_JFCB)
+         PUSH  PRINT,NOPRINT
+         PRINT NOGEN
+MY_JFCB  DS    0F
+         IEFJFCBN LIST=NO
+         POP   PRINT,NOPRINT
+*
+         DS    0D
+STORADR  DC    A(MY_DYN_AREA)
+RBLEN    EQU   S99RBEND-S99RB
+*
+KEYA     DC    Y(DALDDNAM)
+         DC    X'0001'                1 ENTRY
+         DC    X'0008'                LENGTH IS 8
+KEYADDNM DC    CL8'BRWSPDCB'          DDNAME FOR ALLOCATION
+*
+KEYADS   DC    Y(DALDSNAM)
+         DC    X'0001'                1 ENTRY
+KEYADSL  DC    H'44'                  LENGTH IS 44
+KEYADSN  DC    CL44' '                DATASET NAME
+*
+KEYADISP DC    Y(DALSTATS)            DISP=
+         DC    X'0001'                1 ENTRY
+         DC    X'0001'                LENGTH IS 1
+         DC    X'08'                  DISP=SHR
+*
+KEYSSID  DC    Y(DALUASSR)            JES2=
+         DC    X'0001'                1 ENTRY
+         DC    X'0004'                LENGTH IS 4
+         DC    C'JES2'                JES2
+*
+KEYTOKEN DC    Y(DALBRTKN)            BROWSE TOKEN
+         DC    X'0007'                7 ENTRIES
+BTOKPL1  DC    XL2'4'              ID LENGTH
+BTOKID   DC    CL4'BTOK'           ID FIELD
+*
+BTOKPL2  DC    XL2'2'              VERSION LENGTH
+BTOKVER  DS    0XL2                SERVICE VERSION NUMBER
+BTOKTYPE DC    XL1'3'              CONTROL BLOCK TYPE
+BTOKBRWS EQU   0                   BLOCK CREATED FOR BROWSE
+*        EQU   1                   RESERVED - DO NOT EVER USE
+BTOKSAPI EQU   2                   BLOCK CREATED BY SYSOUT API
+BTOKSTKN EQU   3                   SPOOL DATA SET OR CLIENT
+*                                    TOKEN ALLOCATION
+BTOKVERS DC    XL1'3'              VERSION
+BTOKVRNM EQU   3                   VERSION OS/390 RELEASE 10
+**
+BTOKPL3  DC    XL2'4'              SPOOL TOKEN LENGTH
+BTOKIOTP DC    XL4'0'              IOT MTTR (OR ZERO)          @R10LSDB
+BTOKSAPT EQU   BTOKIOTP,L'BTOKIOTP,T'BTOKIOTP  SAPI TOKEN      @R10LSDB
+BTOKSPLT EQU   BTOKIOTP,L'BTOKIOTP,T'BTOKIOTP  CLIENT/DS TOKEN @R10LSDB
+**
+BTOKPL4  DC    XL2'4'              JOB KEY LENGTH
+BTOKJKEY DC    XL4'0'              JOB KEY IN HEX
+**
+BTOKPL5  DC    XL2'2'              ASID LENGTH
+BTOKASID DS    XL2                 ASID IN HEX
+**
+BTOKPL6  DC    XL2'8'              NETWORK RECEIVER USERID LENGTH
+BTOKRCID DC    CL8'SPURT'          NETWORK RECEIVER USERID
+**
+BTOKPL7  DC    AL2(255)            LOG STRING PARAMETER LENGTH
+BTOKLOGS DS    0CL255              LOG STRING PARAMETER
+BTOKLSDL DC    XL1'0'              LOG STRING DATA LENGTH (0-254 BYTES)
+BTOKLSDA DS    CL254               LOG STRING DATA
+BTOKEND  EQU   *                   END OF BTOK
+BTOKSIZE EQU   *-BTOKPL1           SIZE OF BTOK
+*
+         PUSH  PRINT,NOPRINT
+         PRINT NOGEN
+         DCBD  DSORG=QS,DEVD=DA
+         IEFTIOT1
+BRWSPOOL CSECT
+         IEFZB4D0
+         IEFZB4D2
+         POP   PRINT,NOPRINT
+*
+BRWSPOOL CSECT
+*
+         LTORG
+*
+MY_DYN_AREA    DS    4096CL1
+*
+         PRGESTAT
+         PRGEND
+         END

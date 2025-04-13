@@ -1,0 +1,465 @@
+ TITLE 'RXCHKRC - REXX function to get previous step RC'
+ PRINT GEN
+*
+RXCHKRC PRGDEF FSEG=MAIN_BIT,REXX=Y,RENT=Y
+GR6        EQU   6,,,,GR64             64 bit register 6
+*______________________________________________________________________
+*
+* THIS PROGRAM ACTS AS A REXX FUNCTION
+*
+*  Output of 'BYPASSED' means that the step was bypassed because of
+*  RESTART=STEP02 on the JOB card, 'SKIPPED' means the step was
+*  not run because of condition code checking.
+*
+*    INPUT
+*      name of a STEM variable
+*
+*    OUTPUT
+*      IF SUCCESSFULL
+*         RC=0
+*         STEM variable contains the previous batch JOB steps teps
+*         names and return codes
+*         'STEP01  ,        ,PROG00  ,BYPASSED'
+*         'STEP02  ,PROC01  ,PROG01  ,RC=0000 'parm value
+*         'STEP03  ,        ,PROG02  ,AB=S0C1 '
+*         'STEP04  ,        ,IDCAMS  ,RC=0006 '
+*         'STEP05  ,        ,PROG04  ,SKIPPED '
+*         'STEP06  ,        ,PROG02  ,AB=U4000'
+*      ELSE
+*         RC=error message
+*      ENDIF
+*______________________________________________________________________
+*
+* EXAMPLE USAGE
+*
+* /*REXX*/
+*
+*   MY_STEM = "WANG"
+*
+*   DROP WANG.
+*
+*   RE_SPONSE = RXCHKRC(MY_STEM)
+*   IF  RE_SPONSE = 0 THEN DO
+*      DO LO_OP_R = 1 TO WANG.0
+*         SAY  WANG.LO_OP_R
+*      END
+*   END
+*   DROP WANG.
+*   EXIT
+*______________________________________________________________________
+*
+*                        PARAMETERS
+*______________________________________________________________________
+*
+*
+*  PARAMETER 1    -    STEM VARIABLE NAME
+*
+*______________________________________________________________________
+*
+*  REENTRANT STORAGE
+*
+CURRENT_SCT    DS    F     address of current step
+*
+*    THE PARAMETER AREA USED TO CALL IRXEXCOM
+IX_PARM              DS    4F
+*
+STEM_AFT_DOT         DS    F
+STEM_NAME            DS    CL40
+STEM_NAME_LEN        DS    F
+STEM_TEXT            DS    CL78
+                     ORG   STEM_TEXT
+STEM_STEPNAME        DS    CL8
+STEM_COMMA_1         DS    CL1
+STEM_PROCNAME        DS    CL8
+STEM_COMMA_2         DS    CL1
+STEM_PROGNAME        DS    CL8
+STEM_COMMA_3         DS    CL1
+STEM_RESULT          DS    CL8
+STEM_COMMA_4         DS    CL1
+STEM_PARM            DS    CL42
+STEM_OUT_LEN         EQU   *-STEM_TEXT
+                     ORG
+STEM_ZERO_TEXT       DS    CL8
+STEM_ZERO_ADR        DS    F
+STEM_ZERO_LEN        DS    F
+VAR_TEXT             DC    CL8' '
+VAR_COUNT            DC    PL4'0'
+VAR_POINT            DC    H'0'
+*
+ERR_NO               DS    CL1
+WORK_AREA            DS    CL8
+*
+PARM_AREA            DS    (SHVBLEN)XL1
+*
+SWEPAPTR DS    F
+EPA      DS    CL28
+SWAPARMS SWAREQ MF=L
+         IEFJESCT
+         IEFZB505 LOCEPAX=YES
+*
+         USING ZB505,EPA
+*
+        PRGEDEF
+*______________________________________________________________________
+*
+ SEGS MAIN_BIT
+*
+   ZAP   VAR_COUNT,=P'0'               initialise count
+   LA    R1,=CL8'IRXEXCOM'
+   ST    R1,IX_PARM
+*
+   SEGDO GET_ARGUMENTS
+*
+   SEGDO GET_STEP_DETAILS
+*
+   MVI   EVALBLOCK_EVDATA,C'0'
+   LA    R1,1
+   ST    R1,EVALBLOCK_EVLEN
+*
+ SEGE MAIN_BIT
+*______________________________________________________________________
+*
+ SEGS GET_ARGUMENTS
+*
+   IF (CLC,ARGTABLE_ARGSTRING_PTR,EQ,=8X'FF')
+     MVI   ERR_NO,1
+     SEGDO NOT_VALID
+   ELSEIF (CLC,ARGTABLE_ARGSTRING_LENGTH,EQ,=F'0')
+     MVI   ERR_NO,2
+     SEGDO NOT_VALID
+   ELSEIF (CLC,ARGTABLE_ARGSTRING_LENGTH,GT,=F'8')
+     MVI   ERR_NO,3
+     SEGDO NOT_VALID
+   ENDIF
+   L     R15,ARGTABLE_ARGSTRING_PTR
+   L     R14,ARGTABLE_ARGSTRING_LENGTH
+   ST    R14,STEM_NAME_LEN
+   BCTR  R14,0
+   LA    R1,STEM_NAME
+   EX    R14,COPY_ARGUMENT
+   LA    R1,1(R14,R1)
+   MVI   0(R1),C'.'
+   LA    R1,1(,R1)
+   ST    R1,STEM_AFT_DOT
+*
+   LA    ARG_POINT,ARGTABLE_NEXT       check for second argument
+   IF (CLC,ARGTABLE_ARGSTRING_PTR,NE,=8X'FF')
+     MVI   ERR_NO,4
+     SEGDO NOT_VALID
+   ENDIF
+*
+   SEGDO INIT_STEM_ZERO
+*
+ SEGE GET_ARGUMENTS
+*______________________________________________________________________
+*
+ SEGS GET_STEP_DETAILS
+*
+   USING PSA,R0
+   L     R1,PSATOLD
+   DROP  R0
+   L     R4,TCBJSCB-TCB(,R1)           point to our TCB
+   USING IEZJSCB,R4
+*
+   LA    R2,JSCSCTP                    current SCT pointer
+   SEGDO DO_A_SWAREQ                   convert SVA to storage
+   MVC   CURRENT_SCT,SWBLKPTR          save address of this step
+*
+   LA    R2,JSCBJCTA                   JCT pointer
+   SEGDO DO_A_SWAREQ                   convert SVA to storage
+   L     R5,SWBLKPTR                   JCT address
+   USING JCT,R5                        macro IEFAJCTB
+*
+   LA    R2,JCTSDKAD                   first SCT
+   SEGDO DO_A_SWAREQ                   convert SVA to storage
+   L     R6,SWBLKPTR                   SCT address
+   USING SCT,R6                        macro IEFASCTB
+*
+   MVI   STEM_COMMA_1,C','
+   MVI   STEM_COMMA_2,C','
+   MVI   STEM_COMMA_3,C','
+*
+   DO INF
+   DOEXIT (C,R6,EQ,CURRENT_SCT)        quit if the current step
+     IF (CLI,SCTSCLPC,GT,C' ')
+       MVC   STEM_STEPNAME,SCTSCLPC
+       MVC   STEM_PROCNAME,SCTSNAME
+     ELSE
+       MVC   STEM_STEPNAME,SCTSNAME
+       MVC   STEM_PROCNAME,SCTSCLPC
+     ENDIF
+     MVC   STEM_PROGNAME(8),SCTPGMNM
+     MVC   STEM_RESULT(3),=C'RC='
+     LH    R1,SCTSEXEC
+     CVD   R1,DOUB_WORD
+     OI    DOUB_WORD+7,X'0F'
+     UNPK  STEM_RESULT+3(5),DOUB_WORD
+     MVI   STEM_COMMA_4,C','
+     LA    R2,SCTXBTTR                 SCT extension
+     SEGDO DO_A_SWAREQ
+     L     R5,SWBLKPTR                 SCT X
+     USING SCTXIN,R5                   macro IEFSCTX
+     IF (TM,SCTABCND,SCTABEND,NZ)      did the step abend
+       MVC   STEM_RESULT,=CL8' '
+       IF (CLFHSI,SCTXABCC,NE,0)       abend code there
+         XUNPK SCTXABCC,4,WORK_AREA
+         IF (CLC,WORK_AREA+2(3),NE,=C'000')  system abend
+           MVC   STEM_RESULT(4),=C'AB=S'
+           MVC   STEM_RESULT+4(3),WORK_AREA+2
+         ELSE
+           MVC   STEM_RESULT(4),=C'AB=U'
+           LH    R1,SCTXABCC+2
+           CVD   R1,DOUB_WORD
+           OI    DOUB_WORD+7,X'0F'
+           UNPK  STEM_RESULT+4(4),DOUB_WORD
+         ENDIF
+       ELSE                            could not get ABEND code
+         MVC   STEM_RESULT,=CL8'ABEND'
+       ENDIF
+     ENDIF
+     MVC   STEM_PARM,SCTXPARM
+     IF (TM,SCTSTEND,SCTSTNRN,NZ)      did the step not run
+       MVC   STEM_RESULT(8),=CL8'SKIPPED'
+     ELSEIF (TM,SCTSTEND,SCTSTSRT,Z)   did the step never start
+       MVC   STEM_RESULT(8),=CL8'BYPASSED'
+     ENDIF
+     SLLG  GR6,GR6,32                  save SCT address in high half
+     SEGDO SET_STEM_LINE
+     SRLG  GR6,GR6,32                  put address back in low half
+   DOEXIT (CLC,SCTANSCT,EQ,=F'0')      no more steps
+     LA    R2,SCTANSCT                 get next step SVA
+     SEGDO DO_A_SWAREQ
+     L     R6,SWBLKPTR                 next SCT
+   ENDDO
+*
+   IF (CP,VAR_COUNT,EQ,=P'0')
+     MVI   ERR_NO,5
+     SEGDO NOT_VALID
+   ENDIF
+*
+   MVC   STEM_ZERO_TEXT,=X'4020202020202120'
+   LA    R1,STEM_ZERO_TEXT+L'STEM_ZERO_TEXT-1
+   EDMK  STEM_ZERO_TEXT,VAR_COUNT
+   LA    R2,STEM_ZERO_TEXT+L'STEM_ZERO_TEXT
+   SR    R2,R1
+   ST    R1,STEM_ZERO_ADR
+   ST    R2,STEM_ZERO_LEN
+
+   SEGDO SET_STEM_ZERO
+*
+ SEGE GET_STEP_DETAILS
+*______________________________________________________________________
+*
+ SEGS DO_A_SWAREQ
+*
+   XC    SWAEPAX,SWAEPAX               clear
+   LA    R1,EPA                        point to EPA
+   ST    R1,SWEPAPTR                   and store address
+   MVC   SWVA,0(R2)
+   SWAREQ FCODE=RL,EPA=SWEPAPTR,MF=(E,SWAPARMS),UNAUTH=YES
+   IF (LTR,R15,R15,NZ)
+     MVC   EVALBLOCK_EVDATA(17),=CL17'GETSWA SWAREQ RC='
+     XUNPK (R15),,EVALBLOCK_EVDATA+17
+     LA    R1,25
+     ST    R1,EVALBLOCK_EVLEN
+     PRGQUIT
+   ENDIF
+*  XUNPK SWVA,,MESS_TXT
+*  XUNPK SWBLKPTR,,MESS_TXT+10
+*  SEGDO WRITE_LOG
+*
+ SEGE DO_A_SWAREQ
+*______________________________________________________________________
+*
+ SEGS SET_STEM_LINE
+*
+   LA    R6,PARM_AREA
+   USING SHVBLOCK,R6
+   MVC   SHVNEXT,=F'0'
+   MVC   SHVUSER,=F'0'
+   MVI   SHVCODE,SHVSTORE
+   MVC   SHVBUFL,=F'0'
+   LA    R1,STEM_NAME
+   ST    R1,SHVNAMA
+   AP    VAR_COUNT,=P'1'
+   MVC   VAR_TEXT,=X'4020202020202120'
+   LA    R1,VAR_TEXT+L'VAR_TEXT-1
+   EDMK  VAR_TEXT,VAR_COUNT
+   LA    R2,VAR_TEXT+L'VAR_TEXT-1
+   SR    R2,R1
+   L     R3,STEM_AFT_DOT
+*  SO  R2 HAS LENGTH TO MOVE
+*      R1 HAS WHERE FROM
+*      R3 HAS WHERE TO
+   EX    R2,DO_MOVE
+   LA    R3,1(R2,R3)                   point past copied value
+   LA    R1,STEM_NAME
+   SR    R3,R1
+   ST    R3,SHVNAML                    set stem name length
+*
+   LA    R1,STEM_TEXT                  text to put in stem
+   ST    R1,SHVVALA
+   LA    R1,STEM_OUT_LEN               length of text to put in stem
+   ST    R1,SHVVALL
+   LA    R1,PARM_AREA
+   ST    R1,IX_PARM+12
+   OI    IX_PARM+12,X'80'
+
+   LR    R0,11
+   LA    R1,IX_PARM
+   USING IRXEXTE,15
+   L     15,ENVBLOCK_IRXEXTE
+   L     15,IRXEXCOM
+   DROP  15
+   BALR  14,15
+*
+   IF (LTR,R15,R15,NZ)
+     MVC   EVALBLOCK_EVDATA(17),=CL22'Error in STEM_LINE RC='
+     XUNPK (R15),,EVALBLOCK_EVDATA+22
+     LA    R1,30
+     ST    R1,EVALBLOCK_EVLEN
+     PRGQUIT
+   ENDIF
+*
+ SEGE SET_STEM_LINE
+*______________________________________________________________________
+*
+ SEGS SET_STEM_ZERO
+*
+   LA    R6,PARM_AREA
+   USING SHVBLOCK,R6
+   MVC   SHVNEXT,=F'0'
+   MVC   SHVUSER,=F'0'
+   MVI   SHVCODE,SHVSYSET
+   MVC   SHVBUFL,=F'0'
+   LA    R1,STEM_NAME
+   ST    R1,SHVNAMA
+   L     R1,STEM_AFT_DOT
+   MVI   0(R1),C'0'
+   L     R1,STEM_NAME_LEN
+   LA    R1,2(R1)
+   ST    R1,SHVNAML
+
+   L     R1,STEM_ZERO_ADR
+   ST    R1,SHVVALA
+   L     R1,STEM_ZERO_LEN
+   ST    R1,SHVVALL
+   LA    R1,PARM_AREA
+   ST    R1,IX_PARM+12
+   OI    IX_PARM+12,X'80'
+
+   LR    R0,11
+   LA    R1,IX_PARM
+   USING IRXEXTE,15
+   L     15,ENVBLOCK_IRXEXTE
+   L     15,IRXEXCOM
+   DROP  15
+   BALR  14,15
+   IF (LTR,R15,R15,NZ)
+     MVC   EVALBLOCK_EVDATA(17),=CL22'Error in STEM_ZERO RC='
+     XUNPK (R15),,EVALBLOCK_EVDATA+22
+     LA    R1,30
+     ST    R1,EVALBLOCK_EVLEN
+     PRGQUIT
+   ENDIF
+*
+ SEGE SET_STEM_ZERO
+*______________________________________________________________________
+*
+ SEGS INIT_STEM_ZERO
+*
+   LA    R6,PARM_AREA
+   USING SHVBLOCK,R6
+   MVC   SHVNEXT,=F'0'
+   MVC   SHVUSER,=F'0'
+   MVI   SHVCODE,SHVSYSET
+   MVC   SHVBUFL,=F'0'
+   LA    R1,STEM_NAME
+   ST    R1,SHVNAMA
+   L     R1,STEM_AFT_DOT
+   MVI   0(R1),C'0'
+   L     R1,STEM_NAME_LEN
+   LA    R1,2(R1)
+   ST    R1,SHVNAML
+
+   LA    R1,=C'0'
+   ST    R1,SHVVALA
+   LA    R1,1
+   ST    R1,SHVVALL
+   LA    R1,PARM_AREA
+   ST    R1,IX_PARM+12
+   OI    IX_PARM+12,X'80'
+
+   LR    R0,11
+   LA    R1,IX_PARM
+   USING IRXEXTE,15
+   L     15,ENVBLOCK_IRXEXTE
+   L     15,IRXEXCOM
+   DROP  15
+   BALR  14,15
+   IF (LTR,R15,R15,NZ)
+     MVC   EVALBLOCK_EVDATA(17),=CL27'Error in INIT_STEM_ZERO RC='
+     XUNPK (R15),,EVALBLOCK_EVDATA+27
+     LA    R1,35
+     ST    R1,EVALBLOCK_EVLEN
+     PRGQUIT
+   ENDIF
+*
+ SEGE INIT_STEM_ZERO
+*______________________________________________________________________
+*
+ SEGS NOT_VALID
+*
+   IF (CLI,ERR_NO,EQ,1)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'argument 1 not entered'
+   ELSEIF (CLI,ERR_NO,EQ,2)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'argument 1 was zero length'
+   ELSEIF (CLI,ERR_NO,EQ,3)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'argument 1 > 8 bytes'
+   ELSEIF (CLI,ERR_NO,EQ,4)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'second argument supplied'
+   ELSEIF (CLI,ERR_NO,EQ,5)
+     MVC   EVALBLOCK_EVDATA(30),=CL30'no previous job steps'
+   ELSE
+     MVC   EVALBLOCK_EVDATA(30),=CL30'unknown error, rc='
+     XR    R1,R1
+     IC    R1,ERR_NO
+     CVD   R1,DOUB_WORD
+     OI    DOUB_WORD+7,X'0F'
+     UNPK  EVALBLOCK_EVDATA+18(4),DOUB_WORD
+     XC    R_C,R_C
+   ENDIF
+   MVC   EVALBLOCK_EVLEN,=F'30'
+*
+   PRGQUIT
+*
+ SEGE NOT_VALID
+*______________________________________________________________________
+*
+         PRGSTAT
+*
+COPY_ARGUMENT  MVC   0(1,R1),0(R15)
+DO_MOVE        MVC   0(1,R3),0(R1)
+*
+         LTORG
+*______________________________________________________________________
+*
+         PUSH  PRINT,NOPRINT
+         PRINT OFF
+         IHAPSA DSECT=YES,LIST=YES     Prefixed Save Area
+         CVT    DSECT=YES,LIST=YES     Communications Vector Table
+         IKJTCB DSECT=YES,LIST=YES     Task Control Block
+         IEZJSCB                       Job/Step Control Block
+         POP   PRINT,NOPRINT
+
+JCT      DSECT
+         IEFAJCTB                      Job Control Table (MODGEN)
+*
+SCT      DSECT
+         IEFASCTB                      Step Control Table (MODGEN)
+*
+         IEFSCTX                       Step Control Block extension
+*
+         PRGESTAT
+         PRGEND
+         END

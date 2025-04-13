@@ -1,0 +1,12 @@
+Sort statements to extract required SMF records
+//SYSIN    DD  *
+*  INCLUDE
+*       TYPE 15                        END OF FILE ON OUTPUT
+*       TYPE 30 SUBTYPE 4              END OF JOB STEP
+*  SORT ON DATE, TIME AND RECORD TYPE ASCENDING
+ INCLUDE COND=(6,1,BI,EQ,X'0F',OR,
+               (6,1,BI,EQ,X'1E',AND,23,2,BI,EQ,X'0004'))
+ SORT FIELDS=(11,4,BI,A,7,4,BI,A,6,1,BI,A)
+ OPTION VLSHRT
+ END
+//*

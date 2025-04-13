@@ -1,0 +1,184 @@
+ TITLE 'VBSADLEN - convert VBS file add 6 byte leading record length'
+ PRINT GEN
+*______________________________________________________________________
+*
+VBSADLEN PRGDEF  FSEG=MAIN_PART,RMODE=24,RENT=Y
+*
+*  This reads a file containing variable length records and writes a
+*  new file where each record is prefixed by a 6 byte record length
+*  which is the length of the rest of the record so total record
+*  length is the 6 byte value + 6, these 6 bytes are ASCII numeric.
+*  This is the same format that DB2 on LUW uses for IXF unload files.
+*  Copy from the mainframe with no EBCDIC/ASCII or CRLF
+*
+*  This program is similar to VBADDLEN but reads VBS spanned records
+*  and creates an output VB file.
+*______________________________________________________________________
+*
+TOTAL_COUNT    DS    F         count of total records
+SYSIN_REC      DS    CL80
+SYSOUT_REC     DS    CL80
+S_E_O_F        DS    C         end of file SYSIN
+D_E_O_F        DS    C         end of file DATAIN
+IXF_CRLF       DS    C
+IXF_LF         DS    C
+IXF_EBCDIC     DS    C         IXF length in EBCDIC
+*
+SPAN_WORK      DS    3F                used within the I/O macro
+SPAN_REAL_ADR  DS    F                 address of the DSECT SPAN_MAP
+SPAN_AREA      DS    F                 address of a record area
+SPAN_LEN       DS    F                 actual length of record
+SPAN_MAX       DS    F                 max length of record
+*
+         USING IHADCB,DATAIN
+*
+SPAN_MAP       DSECT
+DATA_RECORD    DS    0F
+DATA_LEN       DS    H
+               DS    H
+DATA_IXF_LEN   DS    CL6
+DATA_TEXT      DS    32760CL1
+*
+         PRGEDEF
+*______________________________________________________________________
+*
+ SEGS MAIN_PART
+*
+   MVI   SYSOUT_REC,C' '
+   MVC   SYSOUT_REC+1(L'SYSOUT_REC-1),SYSOUT_REC
+   SEGDO OPEN_SYSOUT
+*
+   SEGDO OPEN_SYSIN
+   DO INF
+     SEGDO GET_SYSIN
+   DOEXIT (CLI,S_E_O_F,EQ,C'Y')
+     MVC   SYSOUT_REC(72),SYSIN_REC
+     SEGDO PUT_SYSOUT                  echo input
+     IF (CLC,=C'IXF_EBCDIC ',EQ,SYSIN_REC)
+       MVI   IXF_EBCDIC,C'Y'
+     ELSEIF (CLC,=C'CRLF ',EQ,SYSIN_REC)
+       MVI   IXF_CRLF,C'Y'
+     ELSEIF (CLC,=C'LF ',EQ,SYSIN_REC)
+       MVI   IXF_LF,C'Y'
+     ELSE
+       MVC   MESS_TXT(L'INV_PRM),INV_PRM
+       SEGDO WRITE_LOG
+       PRGQUIT RC=8
+     ENDIF
+   ENDDO
+   SEGDO CLOSE_SYSIN
+*
+   L     R2,=F'1048576'                get a megabyte of storage
+   MVC   SPAN_MAX,=F'1048566'          real length for spanned record
+   STORAGE OBTAIN,LENGTH=(R2),LOC=31
+   ST    R1,SPAN_REAL_ADR              save dsect area address
+   LR    R8,R1
+   USING SPAN_MAP,R8
+   LA    R6,10(,R8)                    point to actual span area
+   ST    R6,SPAN_AREA                  and save for IO
+*
+   SEGDO OPEN_DATAOUT
+   SEGDO OPEN_DATAIN
+   DO INF
+     SEGDO GET_DATAIN
+   DOEXIT (CLI,D_E_O_F,EQ,C'Y')
+     L     R1,TOTAL_COUNT
+     LA    R1,1(,R1)
+     ST    R1,TOTAL_COUNT              increment total record count
+     L     R7,SPAN_LEN                 get actual length of record
+     CVD   R7,DOUB_WORD                convert to decimal
+     IF (CLI,IXF_CRLF,EQ,C'Y')
+       LA    R1,DATA_TEXT
+       LA    R1,0(R7,R1)
+       MVC   0(2,R1),=X'0D0A'
+       AHI   R7,2
+       AP    DOUB_WORD,=P'2'
+     ELSEIF (CLI,IXF_LF,EQ,C'Y')
+       LA    R1,DATA_TEXT
+       LA    R1,0(R7,R1)
+       MVI   0(R1),X'0A'
+       AHI   R7,1
+       AP    DOUB_WORD,=P'1'
+     ENDIF
+     OI    DOUB_WORD+7,X'0F'           set sign
+     UNPK  DATA_IXF_LEN,DOUB_WORD      set IXF length in output
+     AHI   R7,10                       add 4 for RDW + 6 for IXF length
+     STH   R7,DATA_LEN                 save in output file
+     IF (CLI,IXF_EBCDIC,NE,C'Y')
+       TR    DATA_IXF_LEN,TO_ASCII
+     ENDIF
+     SEGDO PUT_DATAOUT                 write record
+   ENDDO
+   SEGDO CLOSE_DATAIN
+   SEGDO CLOSE_DATAOUT
+   L     R1,TOTAL_COUNT                get total record count
+   CVD   R1,DOUB_WORD
+   MVC   SYSOUT_REC(L'EDPAT),EDPAT
+   ED    SYSOUT_REC(L'EDPAT),DOUB_WORD
+   MVC   SYSOUT_REC+L'EDPAT(L'TOT_MES),TOT_MES
+   SEGDO PUT_SYSOUT
+   IF (CLI,IXF_CRLF,EQ,C'Y')
+     MVC   SYSOUT_REC+L'EDPAT(L'CRLF_MES),CRLF_MES
+   ELSEIF (CLI,IXF_LF,EQ,C'Y')
+     MVC   SYSOUT_REC+L'EDPAT(L'LF_MES),LF_MES
+   ELSE
+     MVC   SYSOUT_REC+L'EDPAT(L'NO_MES),NO_MES
+   ENDIF
+   SEGDO PUT_SYSOUT
+   IF (CLI,IXF_CRLF,NE,C'Y'),AND,(CLI,IXF_LF,NE,C'Y')
+     MVC   SYSOUT_REC+L'EDPAT(L'WAR_NING),WAR_NING
+     SEGDO PUT_SYSOUT
+   ENDIF
+   SEGDO CLOSE_SYSOUT
+   L     R2,=F'1048576'                storage length
+   L     R1,SPAN_REAL_ADR              storage address
+   STORAGE RELEASE,ADDR=(R1),LENGTH=(R2)
+*
+ SEGE MAIN_PART
+*______________________________________________________________________
+*
+ PRGDCBI DCB=SYSIN,EOF=S_E_O_F,REC=SYSIN_REC          code for SYSIN
+*                                            generate code for DATAIN
+ PRGDCBI DCB=DATAIN,EOF=D_E_O_F,                                       /
+               SPANA=SPAN_AREA,SPANL=SPAN_LEN,SPANM=SPAN_MAX
+*
+ PRGDCBO DCB=SYSOUT,REC=SYSOUT_REC           generate code for SYSOUT
+*
+ PRGDCBO DCB=DATAOUT,REC=DATA_RECORD,CLEAR=N generate code for DATAOUT
+*______________________________________________________________________
+*
+         PRGSTAT
+*
+EDPAT    DC    X'40202020202020202020202020202120'
+INV_PRM  DC    C'Invalid argument in SYSIN'
+TOT_MES  DC    C' records processed'
+CRLF_MES DC    C' CRLF x''0D0A'' added to all records'
+LF_MES   DC    C' LF x''0A'' added to all records'
+NO_MES   DC    C' Use PARM=CRLF or LF to add windows/linux new line'
+WAR_NING DC    C' while keeping record length correct'
+*
+SYSIN    DCB   DSORG=PS,DDNAME=SYSIN,MACRF=(GM),EODAD=END_SYSIN
+*
+SYSOUT   DCB   DSORG=PS,DDNAME=SYSOUT,MACRF=(PM),RECFM=FB,LRECL=80
+*
+DATAOUT  DCB   DSORG=PS,DDNAME=DATAOUT,MACRF=(PM),RECFM=VB,LRECL=32700
+*
+DATAIN   DCB   DSORG=PS,DDNAME=DATAIN,MACRF=(GL),EODAD=END_DATAIN
+*
+SPACES   DC    CL80' '
+*
+TO_ASCII DC    256AL1(*-TO_ASCII)
+         ORG   TO_ASCII+C'0'
+         DC    X'30313233343536373839'
+         PUSH  PRINT,NOPRINT
+         PRINT NOGEN
+         DCBD  DSORG=QS,DEVD=DA
+         POP   PRINT,NOPRINT
+*
+VBSADLEN CSECT
+*
+         LTORG
+*
+         PRGESTAT
+         PRGEND
+         END

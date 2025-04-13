@@ -1,0 +1,28 @@
+//*******************************************************
+//DELETE  EXEC PGM=IDCAMS
+//SYSPRINT DD  DUMMY
+//SYSIN    DD  *
+ DELETE  (?????.ALL.VTOC.DETAILS.MERGE)
+ DELETE  (?????.ALL.VTOC.DETAILS.MERGE.SORT)
+ SET MAXCC = 0
+//*******************************************************
+//* MERGE F1, F3 AND F9 DETAILS
+//FORMAT  EXEC PGM=VOLUMES2,COND=(0,NE)
+//STEPLIB  DD  DISP=SHR,DSN=?????.LOADLIB
+//SYSOUT   DD  SYSOUT=*
+//INF1     DD  DISP=SHR,DSN=?????.ALL.VTOC.DETAILS.F1
+//INF3     DD  DISP=SHR,DSN=?????.ALL.VTOC.DETAILS.F3
+//INF9     DD  DISP=SHR,DSN=?????.ALL.VTOC.DETAILS.F9
+//OUTPUT   DD  DSN=?????.ALL.VTOC.DETAILS.MERGE,
+//             DISP=(NEW,CATLG,DELETE),
+//             SPACE=(TRK,(3,3),RLSE),UNIT=3390
+//*******************************************************
+//SORT    EXEC PGM=SORT,COND=(0,NE)
+//SORTIN   DD  DISP=SHR,DSN=?????.ALL.VTOC.DETAILS.MERGE
+//SORTOUT  DD  DSN=?????.ALL.VTOC.DETAILS.MERGE.SORT,
+//             DISP=(NEW,CATLG,DELETE),
+//             SPACE=(TRK,(3,3),RLSE),UNIT=3390
+//SYSIN    DD  *
+  SORT FIELDS=(1,50,CH,A)        * VOLUME AND DATASET NAME
+//SYSOUT   DD  SYSOUT=*
+//*******************************************************

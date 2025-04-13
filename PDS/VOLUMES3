@@ -1,0 +1,826 @@
+ TITLE 'VOLUMES3  - Print dataset details from VOLUMES2'
+*______________________________________________________________________
+*
+VOLUMES3 PRGDEF FSEG=MAIN_PART,RMODE=24
+*
+*  Created by John Gateley
+*
+*  This program reads the output from VOLUMES2 which has been sorted
+*  by volume name and dataset name and formats a report.
+*
+*  DDNAMES are SYSIN     control cards
+*              VOLIN     the file created by VOLUMES2
+*              SYSOUT    messages from progam
+*              VOLOUT    report of file details
+*
+*  Control cards can be entered in SYSIN to select certain files
+*  EXT=nnn           number of extents >=
+*  CAT=?             catalogued Y or N
+*  RECFM=???         record format must match
+*  LRECL=nnnnn       record length must match e.g. 00080
+*  CREATE=????????   create date must equal, e.g. 2021/123
+*  EXPIRE=????????   expiry date must equal, e.g. 1999/365
+*  REFER=????????    refer  date must equal, e.g. 2022/312
+*  DSNLIKE=******    dataset name should match pattern (like 3;4)
+*  PERCGE=nnn        percentage used   >= input value
+*  PERCEQ=nnn        percentage used    = input value
+*  TRK=nnnnnnnn      number of tracks  >=
+*  XINDEX            exclude the volume index
+*  PROCPDS           get directory block details for PDS datasets
+*  NOGROUP           do not group on volume name
+*  NOTOTALS          do not print totals
+*  NOHEADER          do not print column headings
+*  COUNTUNIQUE       count number of unique dataset names
+*                    the input file VOLIN must be sorted on dataset
+*                    name ascending.
+*
+SYSIN_REC      DS    CL80
+SYSOUT_REC     DS    CL80
+TEST_EXT       DS    CL3               pad with zeroes for testing
+TEST_PERCENT   DS    CL3               pad with zeroes for testing
+TEST_TRK       DS    CL8               pad with zeroes for testing
+TEST_LRECL     DS    CL5               pad with zeroes for testing
+SEL_CAT        DS    CL1               select on catalogued status
+SEL_EXT        DS    CL3               select on dataset extents
+SEL_RECFM      DS    CL3               select on record format
+SEL_LRECL      DS    CL5               select on record length
+SEL_CREATE     DS    CL8               select on date created
+SEL_EXPIRE     DS    CL8               select on expiry date
+SEL_REFER      DS    CL8               select on date last referred
+SEL_PERCGE     DS    CL3               select on percent used >=
+SEL_DSN_L      DS    CL1               length of DSN pattern
+SEL_DSN_W      DS    CL1               DSN pattern had a wild card *
+SEL_DSN_N      DS    CL44              value of DSN pattern    =
+SEL_PERCEQ     DS    CL3               select on percent used  =
+SEL_TRK        DS    CL8               select on number of tracks
+SEL_XINDEX     DS    CL1               exclude VTOC index
+DO_GROUPS      DS    CL1               volume totals required
+DO_TOTALS      DS    CL1               totals required
+DO_HEADER      DS    CL1               column heading required
+DO_PROCPDS     DS    CL1               get PDS directory details
+SELECT_ACTIVE  DS    CL1               selecting is active
+SELECT_PASSED  DS    CL1               select passed
+COUNT_UNIQUE   DS    CL1               count unique dataset name
+LAST_DSN       DS    CL44              previous dataset name
+*
+TOT_DIR_BLK    DS    PL4
+USE_DIR_BLK    DS    PL4
+TOT_DIR_MEM    DS    PL4
+TOT_DIR_ALIAS  DS    PL4
+*
+DODYNVOL_PARM        DS    0D          DYNALLOC VOL and DSN
+DODYNVOL_ACTION      DS    CL1
+DODYNVOL_VOLUME      DS    CL6
+DODYNVOL_DDNAME      DS    CL8
+DODYNVOL_DATASET     DS    CL44
+DODYNVOL_MEMBER      DS    CL8
+*
+ABEND_OPEN     DS    C
+ABEND_REAS     DS    F
+*
+INPUT_REC      DS    CL256
+               ORG   INPUT_REC
+IN_VOL         DS    CL6
+IN_DSN         DS    CL44
+IN_NUM_EXT     DS    CL3
+IN_CATALOGUED  DS    CL1
+IN_DSORG       DS    CL2
+IN_RECFM       DS    CL3
+IN_LRECL       DS    CL5
+IN_BLKL        DS    CL5
+IN_TRK         DS    CL8
+IN_PERCENT     DS    CL3
+IN_CREATE      DS    CL8
+IN_EXPIRE      DS    CL8
+IN_REFERED     DS    CL8
+IN_SPACE       DS    CL16              e.g. CYL(00123,00123)
+               ORG
+LAST_VOLUME    DS    CL6
+E_O_F          DS    CL1               end of file indicator
+IS_AUTH_READ   DS    CL1               result of RACF check
+*
+OUTPUT_REC     DS    CL256
+               ORG   OUTPUT_REC
+OUT_DSN        DS    CL44
+               DS    C
+OUT_CATALOGUED DS    CL1
+               DS    C
+OUT_DSORG      DS    CL2
+               DS    C
+OUT_RECFM      DS    CL3
+               DS    C
+OUT_LRECL      DS    CL5
+               DS    C
+OUT_BLKL       DS    CL5
+               DS    C
+OUT_NUM_EXT    DS    CL3
+               DS    C
+OUT_TRK        DS    CL8
+               DS    CL2
+OUT_PERCENT    DS    CL3
+               DS    C
+OUT_CREATE     DS    CL8
+               DS    C
+OUT_EXPIRE     DS    CL8
+               DS    C
+OUT_REFERED    DS    CL8
+               DS    C
+OUT_SPACE      DS    CL16              e.g. CYL(00123,00123)
+OUT_LEN_1      EQU   *-OUTPUT_REC
+               DS    CL2
+OUT_TOT_BLK    DS    CL6
+               DS    CL2
+OUT_USE_BLK    DS    CL6
+               DS    CL2
+OUT_MEMBERS    DS    CL6
+               DS    CL2
+OUT_ALIASES    DS    CL6
+OUT_LEN_2      EQU   *-OUTPUT_REC
+               ORG
+*
+&OUT_REC_LEN   SETA  OUT_LEN_1
+HOLD_OUTPUT    DS    CL256
+*
+         USING IHADCB,VOLOUT
+*
+         PRGEDEF
+*______________________________________________________________________
+*
+ SEGS MAIN_PART
+*
+   MVI   DO_GROUPS,C'Y'
+   MVI   DO_TOTALS,C'Y'
+   MVI   DO_HEADER,C'Y'
+   SEGDO OPEN_SYSOUT
+   SEGDO PROCESS_SYSIN
+*
+   IF (CLI,DO_PROCPDS,EQ,C'Y')         want PDS directory details
+     LA    R1,OUT_LEN_2
+     STH   R1,DCBLRECL                 use longer record length
+   ENDIF
+   IF (CLI,DO_GROUPS,NE,C'Y')          not groupig by volume
+     LH    R1,DCBLRECL                 get record length of VOLOUT
+     LA    R1,10(,R1)                  add 10 to record length
+     STH   R1,DCBLRECL                 and put it back
+     SEGDO OPEN_VOLOUT
+     IF (CLI,DO_HEADER,EQ,C'Y')        initial heading required
+       MVC   OUTPUT_REC+10+43(L'HEAD_P1),HEAD_P1
+       MVC   OUTPUT_REC+10+86(L'HEAD_P2),HEAD_P2
+       MVC   OUTPUT_REC+10+122(L'HEAD_P3),HEAD_P3
+       SEGDO PUT_VOLOUT
+     ENDIF
+   ELSE
+     SEGDO OPEN_VOLOUT
+   ENDIF
+*
+   SEGDO OPEN_VOLIN
+   DO INF
+     SEGDO GET_VOLIN
+   DOEXIT (CLI,E_O_F,EQ,C'Y')
+     MVI   SELECT_PASSED,C'Y'          assume we want this
+     IF (CLI,SELECT_ACTIVE,EQ,C'Y')
+       SEGDO SELECT_TESTING            see if we really do
+     ENDIF
+     IF (CLI,SELECT_PASSED,EQ,C'Y')
+       IF (CLC,LAST_VOLUME,NE,IN_VOL)  change of disk volume
+         IF (CLI,DO_GROUPS,EQ,C'Y')    and grouping by volume
+           IF (CLC,LAST_VOLUME,GT,=C'      ')
+             SEGDO OUTPUT_VOLUME_TRAILER
+           ENDIF
+           MVC   OUTPUT_REC+5(6),=C'Volume'
+           MVC   OUTPUT_REC+12(6),IN_VOL
+           MVC   OUTPUT_REC+43(L'HEAD_P1),HEAD_P1
+           MVC   OUTPUT_REC+86(L'HEAD_P2),HEAD_P2
+           MVC   OUTPUT_REC+122(L'HEAD_P3),HEAD_P3
+           SEGDO PUT_VOLOUT
+           MVC   LAST_VOLUME,IN_VOL
+           AP    VOLUME_COUNT,=P'1'
+         ENDIF
+       ENDIF
+       SEGDO PROCESS_INPUT
+     ENDIF
+   ENDDO
+*
+   IF (CLI,DO_GROUPS,EQ,C'Y')
+     SEGDO OUTPUT_VOLUME_TRAILER
+   ENDIF
+   IF (CLI,DO_TOTALS,EQ,C'Y')
+     SEGDO OUTPUT_PROGRAM_TRAILER
+   ENDIF
+   MVC   SYSOUT_REC(13),=C'Total files  '
+   MVC   ZD8,ED_PL8
+   ED    ZD8,TOTAL_FILES
+   MVC   SYSOUT_REC+13(L'ZD8),ZD8
+   SEGDO PUT_SYSOUT
+   IF (CLI,COUNT_UNIQUE,EQ,C'Y')
+     MVC   SYSOUT_REC(13),=C'Total unique '
+     MVC   ZD8,ED_PL8
+     ED    ZD8,TOTAL_UNIQUE
+     MVC   SYSOUT_REC+13(L'ZD8),ZD8
+     SEGDO PUT_SYSOUT
+     MVC   SYSOUT_REC(13),=C'Total cat    '
+     MVC   ZD8,ED_PL8
+     ED    ZD8,TOTAL_CAT
+     MVC   SYSOUT_REC+13(L'ZD8),ZD8
+     SEGDO PUT_SYSOUT
+     MVC   SYSOUT_REC(13),=C'Total not cat'
+     MVC   ZD8,ED_PL8
+     ED    ZD8,TOTAL_NOTCAT
+     MVC   SYSOUT_REC+13(L'ZD8),ZD8
+     SEGDO PUT_SYSOUT
+   ELSE
+     MVC   SYSOUT_REC(13),=C'Total tracks '
+     MVC   ZD8,ED_PL8
+     ED    ZD8,TOTAL_TRACKS
+     MVC   SYSOUT_REC+13(L'ZD8),ZD8
+     SEGDO PUT_SYSOUT
+   ENDIF
+   SEGDO CLOSE_VOLIN
+   SEGDO CLOSE_VOLOUT
+   SEGDO CLOSE_SYSOUT
+*
+ SEGE MAIN_PART
+*______________________________________________________________________
+*
+ SEGS PROCESS_SYSIN
+*
+   SEGDO OPEN_SYSIN
+   DO INF
+     SEGDO GET_SYSIN
+   DOEXIT (CLI,E_O_F,EQ,C'Y')
+     IF (CLC,=C'EXT=',EQ,SYSIN_REC)
+       IF (TRT,SYSIN_REC+4(3),NUM_TAB,Z)
+         MVC   SEL_EXT,SYSIN_REC+4
+         MVC   SYSOUT_REC(18),=C'Extent must be >= '
+         MVC   SYSOUT_REC+18(3),SEL_EXT
+         SEGDO PUT_SYSOUT
+         MVI   SELECT_ACTIVE,C'Y'
+       ELSE
+         MVC   SYSOUT_REC(L'INV_EXT),INV_EXT
+         SEGDO PUT_SYSOUT
+         PRGQUIT RC=4
+       ENDIF
+     ELSEIF (CLC,=C'TRK=',EQ,SYSIN_REC)
+       IF (TRT,SYSIN_REC+4(8),NUM_TAB,Z)
+         MVC   SEL_TRK,SYSIN_REC+4
+         MVC   SYSOUT_REC(18),=C'Tracks must be >= '
+         MVC   SYSOUT_REC+18(8),SEL_TRK
+         SEGDO PUT_SYSOUT
+         MVI   SELECT_ACTIVE,C'Y'
+       ELSE
+         MVC   SYSOUT_REC(L'INV_TRK),INV_TRK
+         SEGDO PUT_SYSOUT
+         PRGQUIT RC=4
+       ENDIF
+     ELSEIF (CLC,=C'LRECL=',EQ,SYSIN_REC)
+       IF (TRT,SYSIN_REC+6(5),NUM_TAB,Z)
+         MVC   SEL_LRECL,SYSIN_REC+6
+         MVC   SYSOUT_REC(18),=C'LRECL  must be  = '
+         MVC   SYSOUT_REC+18(5),SEL_LRECL
+         SEGDO PUT_SYSOUT
+         MVI   SELECT_ACTIVE,C'Y'
+       ELSE
+         MVC   SYSOUT_REC(L'INV_TRK),INV_TRK
+         SEGDO PUT_SYSOUT
+         PRGQUIT RC=4
+       ENDIF
+     ELSEIF (CLC,=C'PERCGE=',EQ,SYSIN_REC)
+       IF (TRT,SYSIN_REC+7(3),NUM_TAB,Z)
+         MVC   SEL_PERCGE,SYSIN_REC+7
+         MVC   SYSOUT_REC(18),=C'%use must be   >= '
+         MVC   SYSOUT_REC+18(3),SEL_PERCGE
+         SEGDO PUT_SYSOUT
+         MVI   SELECT_ACTIVE,C'Y'
+       ELSE
+         MVC   SYSOUT_REC(L'INV_PER1),INV_PER1
+         SEGDO PUT_SYSOUT
+         PRGQUIT RC=4
+       ENDIF
+     ELSEIF (CLC,=C'PERCEQ=',EQ,SYSIN_REC)
+       IF (TRT,SYSIN_REC+7(3),NUM_TAB,Z)
+         MVC   SEL_PERCEQ,SYSIN_REC+7
+         MVC   SYSOUT_REC(18),=C'%use must be    = '
+         MVC   SYSOUT_REC+18(3),SEL_PERCEQ
+         SEGDO PUT_SYSOUT
+         MVI   SELECT_ACTIVE,C'Y'
+       ELSE
+         MVC   SYSOUT_REC(L'INV_PER2),INV_PER2
+         SEGDO PUT_SYSOUT
+         PRGQUIT RC=4
+       ENDIF
+     ELSEIF (CLC,=C'CAT=',EQ,SYSIN_REC)
+       MVC   SEL_CAT,SYSIN_REC+4
+       IF (CLI,SEL_CAT,EQ,C'Y')
+         MVC   SYSOUT_REC(L'CAT_YES),CAT_YES
+       ELSEIF (CLI,SEL_CAT,EQ,C'N')
+         MVC   SYSOUT_REC(L'CAT_NO),CAT_NO
+       ELSE
+         MVC   SYSOUT_REC(L'INV_CAT),INV_CAT
+         SEGDO PUT_SYSOUT
+         PRGQUIT RC=4
+       ENDIF
+       SEGDO PUT_SYSOUT
+       MVI   SELECT_ACTIVE,C'Y'
+     ELSEIF (CLC,=C'RECFM=',EQ,SYSIN_REC)
+       MVC   SEL_RECFM,SYSIN_REC+6
+       MVC   SYSOUT_REC(L'REC_FM),REC_FM
+       MVC   SYSOUT_REC+L'REC_FM(3),SEL_RECFM
+       SEGDO PUT_SYSOUT
+       MVI   SELECT_ACTIVE,C'Y'
+     ELSEIF (CLC,=C'CREATE=',EQ,SYSIN_REC)
+       MVC   SEL_CREATE,SYSIN_REC+7
+       MVC   SYSOUT_REC(L'CR_EATE),CR_EATE
+       MVC   SYSOUT_REC+L'CR_EATE(8),SEL_CREATE
+       SEGDO PUT_SYSOUT
+       MVI   SELECT_ACTIVE,C'Y'
+     ELSEIF (CLC,=C'EXPIRE=',EQ,SYSIN_REC)
+       MVC   SEL_EXPIRE,SYSIN_REC+7
+       MVC   SYSOUT_REC(L'EX_PIRE),EX_PIRE
+       MVC   SYSOUT_REC+L'EX_PIRE(8),SEL_EXPIRE
+       SEGDO PUT_SYSOUT
+       MVI   SELECT_ACTIVE,C'Y'
+     ELSEIF (CLC,=C'REFER=',EQ,SYSIN_REC)
+       MVC   SEL_REFER,SYSIN_REC+6
+       MVC   SYSOUT_REC(L'RE_FER),RE_FER
+       MVC   SYSOUT_REC+L'RE_FER(8),SEL_REFER
+       SEGDO PUT_SYSOUT
+       MVI   SELECT_ACTIVE,C'Y'
+     ELSEIF (CLC,=C'XINDEX ',EQ,SYSIN_REC)
+       MVC   SYSOUT_REC(L'EX_INDEX),EX_INDEX
+       SEGDO PUT_SYSOUT
+       MVI   SEL_XINDEX,C'Y'
+       MVI   SELECT_ACTIVE,C'Y'
+     ELSEIF (CLC,=C'NOTOTALS ',EQ,SYSIN_REC)
+       MVI   DO_TOTALS,C'N'
+       MVC   SYSOUT_REC,SYSIN_REC
+       SEGDO PUT_SYSOUT
+     ELSEIF (CLC,=C'PROCPDS ',EQ,SYSIN_REC)
+       MVI   DO_PROCPDS,C'Y'
+       MVC   SYSOUT_REC,SYSIN_REC
+       SEGDO PUT_SYSOUT
+     ELSEIF (CLC,=C'NOGROUP ',EQ,SYSIN_REC)
+       MVI   DO_GROUPS,C'N'
+       MVC   SYSOUT_REC,SYSIN_REC
+       SEGDO PUT_SYSOUT
+     ELSEIF (CLC,=C'NOHEADER ',EQ,SYSIN_REC)
+       MVI   DO_HEADER,C'N'
+       MVC   SYSOUT_REC,SYSIN_REC
+       SEGDO PUT_SYSOUT
+     ELSEIF (CLC,=C'COUNTUNIQUE ',EQ,SYSIN_REC)
+       MVI   COUNT_UNIQUE,C'Y'
+       MVC   SYSOUT_REC,SYSIN_REC
+       SEGDO PUT_SYSOUT
+     ELSEIF (CLC,=C'DSNLIKE=',EQ,SYSIN_REC)
+       MVI   SEL_DSN_N,C' '
+       MVC   SEL_DSN_N+1(L'SEL_DSN_N-1),SEL_DSN_N
+       LA    R1,SEL_DSN_N
+       LA    R14,SYSIN_REC+8
+       MVI   SYSIN_REC+8+44,C' '       ensure trailing blank
+       XR    R15,R15
+       DO INF
+       DOEXIT (CLI,0(R14),EQ,C' ')
+       DOEXIT (CLI,0(R14),EQ,C'*')
+         MVC   0(1,R1),0(R14)
+         AHI   R1,1                    next receiving byte
+         AHI   R14,1                   next sending byte
+         AHI   R15,1                   byte counter
+       ENDDO
+       IF (CLI,0(R14),EQ,C'*')
+         MVI   SEL_DSN_W,C'Y'          flag as wild card
+         AHI   R15,-1                  minus 1 for execute
+         STC   R15,SEL_DSN_L           store execute length
+       ENDIF
+       MVC   SYSOUT_REC,SYSIN_REC
+       SEGDO PUT_SYSOUT
+     ELSEIF (CLI,SYSIN_REC,NE,C'*')
+       MVC   SYSOUT_REC,SYSIN_REC
+       SEGDO PUT_SYSOUT
+       MVC   SYSOUT_REC(L'INV_IN),INV_IN
+       SEGDO PUT_SYSOUT
+       PRGQUIT RC=4
+     ENDIF
+   ENDDO
+   SEGDO CLOSE_SYSIN
+   IF (CLI,SELECT_ACTIVE,EQ,C'Y')
+     SEGDO PUT_SYSOUT
+   ENDIF
+*
+ SEGE PROCESS_SYSIN
+*______________________________________________________________________
+*
+ SEGS SELECT_TESTING
+*
+   IF (CLC,SEL_EXT,GT,SPACES)
+     MVC   TEST_EXT,IN_NUM_EXT
+     OC    TEST_EXT,ZEROES
+     IF (CLC,TEST_EXT,LT,SEL_EXT)
+       MVI   SELECT_PASSED,C'N'
+     ENDIF
+   ENDIF
+   IF (CLC,SEL_PERCGE,GT,SPACES)
+     MVC   TEST_PERCENT,IN_PERCENT
+     OC    TEST_PERCENT,ZEROES
+     IF (CLC,TEST_PERCENT,LT,SEL_PERCGE)
+       MVI   SELECT_PASSED,C'N'
+     ENDIF
+   ENDIF
+   IF (CLC,SEL_PERCEQ,GT,SPACES)
+     MVC   TEST_PERCENT,IN_PERCENT
+     OC    TEST_PERCENT,ZEROES
+     IF (CLC,TEST_PERCENT,NE,SEL_PERCEQ)
+       MVI   SELECT_PASSED,C'N'
+     ENDIF
+   ENDIF
+   IF (CLC,SEL_TRK,GT,SPACES)
+     MVC   TEST_TRK,IN_TRK
+     OC    TEST_TRK,ZEROES
+     IF (CLC,TEST_TRK,LT,SEL_TRK)
+       MVI   SELECT_PASSED,C'N'
+     ENDIF
+   ENDIF
+   IF (CLC,SEL_LRECL,GT,SPACES)
+     MVC   TEST_LRECL,IN_LRECL
+     OC    TEST_LRECL,ZEROES
+     IF (CLC,TEST_LRECL,NE,SEL_LRECL)
+       MVI   SELECT_PASSED,C'N'
+     ENDIF
+   ENDIF
+   IF (CLC,SEL_CAT,GT,SPACES)
+     IF (CLI,SEL_CAT,EQ,C'Y'),AND,(CLI,IN_CATALOGUED,NE,C'Y')
+       MVI   SELECT_PASSED,C'N'
+     ELSEIF (CLI,SEL_CAT,EQ,C'N'),AND,                                 /
+               (CLI,IN_CATALOGUED,GT,C' ')
+       MVI   SELECT_PASSED,C'N'
+     ENDIF
+   ENDIF
+   IF (CLC,SEL_RECFM,GT,SPACES)
+     IF (CLC,SEL_RECFM,NE,IN_RECFM)
+       MVI   SELECT_PASSED,C'N'
+     ENDIF
+   ENDIF
+   IF (CLC,SEL_CREATE,GT,SPACES)
+     IF (CLC,SEL_CREATE,NE,IN_CREATE)
+       MVI   SELECT_PASSED,C'N'
+     ENDIF
+   ENDIF
+   IF (CLC,SEL_EXPIRE,GT,SPACES)
+     IF (CLC,SEL_EXPIRE,NE,IN_EXPIRE)
+       MVI   SELECT_PASSED,C'N'
+     ENDIF
+   ENDIF
+   IF (CLC,SEL_REFER,GT,SPACES)
+     IF (CLC,SEL_REFER,NE,IN_REFERED)
+       MVI   SELECT_PASSED,C'N'
+     ENDIF
+   ENDIF
+   IF (CLI,SEL_XINDEX,EQ,C'Y')
+     IF (CLC,=C'SYS1.VTOCIX.',EQ,IN_DSN)
+       MVI   SELECT_PASSED,C'N'
+     ENDIF
+   ENDIF
+   IF (CLI,SEL_DSN_N,GT,C' ')
+     IF (CLI,SEL_DSN_L,EQ,0)
+       IF (CLC,SEL_DSN_N,NE,IN_DSN)
+         MVI   SELECT_PASSED,C'N'
+       ENDIF
+     ELSE
+       XR    R1,R1
+       IC    R1,SEL_DSN_L              length of execute
+       IF (EX,R1,COMP_DSN,NE)
+         MVI   SELECT_PASSED,C'N'
+       ENDIF
+     ENDIF
+   ENDIF
+*
+ SEGE SELECT_TESTING
+*______________________________________________________________________
+*
+ SEGS PROCESS_INPUT
+*
+   MVC   OUT_DSN,IN_DSN
+   MVC   OUT_NUM_EXT,IN_NUM_EXT
+   MVC   OUT_PERCENT,IN_PERCENT
+   MVC   OUT_CATALOGUED,IN_CATALOGUED
+   MVC   OUT_DSORG,IN_DSORG
+   MVC   OUT_RECFM,IN_RECFM
+   MVC   OUT_LRECL,IN_LRECL
+   MVC   OUT_BLKL,IN_BLKL
+   MVC   OUT_TRK,IN_TRK
+   MVC   OUT_CREATE,IN_CREATE
+   MVC   OUT_EXPIRE,IN_EXPIRE
+   MVC   OUT_REFERED,IN_REFERED
+   MVC   OUT_SPACE,IN_SPACE
+   IF (CLI,DO_PROCPDS,EQ,C'Y'),AND,(CLC,=C'PO',EQ,IN_DSORG)
+     SEGDO CHECK_AUTH                  will RACF let us read this
+     IF (CLI,IS_AUTH_READ,EQ,C'Y')     it will
+       SEGDO DYNALLOC_A
+       SEGDO PROCESS_PDS
+       SEGDO DYNALLOC_D
+     ELSE
+       MVC   OUT_TOT_BLK(L'NOT_AUTH),NOT_AUTH
+     ENDIF
+   ENDIF
+   IF (CLI,DO_GROUPS,NE,C'Y')          put volume name at start of rec
+     MVI   HOLD_OUTPUT,C' '
+     MVC   HOLD_OUTPUT+1(L'HOLD_OUTPUT-1),HOLD_OUTPUT
+     MVC   HOLD_OUTPUT+10(OUT_LEN_2),OUTPUT_REC
+     MVI   OUTPUT_REC,C' '
+     MVC   OUTPUT_REC+1(L'OUTPUT_REC-1),OUTPUT_REC
+     MVC   OUTPUT_REC(6),IN_VOL
+     MVC   OUTPUT_REC+10(OUT_LEN_2),HOLD_OUTPUT+10
+   ENDIF
+   SEGDO PUT_VOLOUT
+   PACK  DOUB_WORD,IN_TRK
+   AP    VOLUME_TRACKS,DOUB_WORD
+   AP    TOTAL_TRACKS,DOUB_WORD
+   AP    VOLUME_FILES,=P'1'
+   AP    TOTAL_FILES,=P'1'
+   IF (CLI,COUNT_UNIQUE,EQ,C'Y')       counting unique dataset
+     IF (CLC,LAST_DSN,GT,IN_DSN)       obviously not sorted
+       MVC   SYSOUT_REC(L'NOT_SORT),NOT_SORT
+       SEGDO PUT_SYSOUT
+       PRGQUIT RC=8
+     ENDIF
+     IF (CLC,LAST_DSN,NE,IN_DSN)       change of DSN
+       AP    TOTAL_UNIQUE,=P'1'
+     ENDIF
+     MVC   LAST_DSN,IN_DSN
+     IF (CLI,IN_CATALOGUED,EQ,C'Y')
+       AP    TOTAL_CAT,=P'1'
+     ELSE
+       AP    TOTAL_NOTCAT,=P'1'
+     ENDIF
+   ENDIF
+*
+ SEGE PROCESS_INPUT
+*______________________________________________________________________
+*
+ SEGS PROCESS_PDS
+*
+   ZAP   TOT_DIR_BLK,=P'0'
+   ZAP   USE_DIR_BLK,=P'0'
+   ZAP   TOT_DIR_MEM,=P'0'
+   ZAP   TOT_DIR_ALIAS,=P'0'
+*
+   SEGDO GET_DIRECTORY_DETAILS
+*
+   IF (CLI,ABEND_OPEN,EQ,C'Y')
+     MVC   OUT_TOT_BLK(L'OPN_FAIL),OPN_FAIL
+     XUNPK ABEND_REAS,,OUT_TOT_BLK+L'OPN_FAIL      e.g. 21300400
+     MVI   OUT_TOT_BLK+L'OPN_FAIL+3,C'-'                213-0400
+     MVC   OUT_TOT_BLK+L'OPN_FAIL+6(2),SPACES           213-04
+   ELSE
+     MVC   ZONE_DEC(L'EDPAT),EDPAT
+     ED    ZONE_DEC(L'EDPAT),TOT_DIR_BLK
+     MVC   OUT_TOT_BLK,ZONE_DEC+2
+     MVC   ZONE_DEC(L'EDPAT),EDPAT
+     ED    ZONE_DEC(L'EDPAT),USE_DIR_BLK
+     MVC   OUT_USE_BLK,ZONE_DEC+2
+     MVC   ZONE_DEC(L'EDPAT),EDPAT
+     ED    ZONE_DEC(L'EDPAT),TOT_DIR_MEM
+     MVC   OUT_MEMBERS,ZONE_DEC+2
+     MVC   ZONE_DEC(L'EDPAT),EDPAT
+     ED    ZONE_DEC(L'EDPAT),TOT_DIR_ALIAS
+     MVC   OUT_ALIASES,ZONE_DEC+2
+   ENDIF
+*
+ SEGE PROCESS_PDS
+*______________________________________________________________________
+*
+ SEGS GET_DIRECTORY_DETAILS
+*
+   MVI   ABEND_OPEN,0
+   OPEN  (MEMLIST,INPUT)
+   IF (CFI,R15,NE,0),OR,(CLI,ABEND_OPEN,EQ,C'Y')
+     SEGQUIT
+   ENDIF
+*
+   DO INF
+     GET   MEMLIST                     next directory block
+     LR    R6,R1                       copy record address
+     AP    TOT_DIR_BLK,=P'1'           count of directory blocks
+     LH    R3,0(R1)                    number of active bytes in block
+     LA    R3,0(R3,R6)                 point to end of block
+     LA    R9,2(0,R6)                  jump past length
+     IF (CLC,0(8,R9),NE,LOWVALS)       something there
+       AP    USE_DIR_BLK,=P'1'         count of used blocks
+       DO INF
+       DOEXIT (CR,R9,GE,R3)            at end of the block
+       DOEXIT (CLC,0(8,R9),EQ,HIGHVALS)  end of directory
+         AP    TOT_DIR_MEM,=P'1'       add to member count
+         IF (TM,11(R9),X'80',O)
+           AP    TOT_DIR_ALIAS,=P'1'   add to alias count
+         ENDIF
+         L     R1,8(R9)                TTR + length of user data
+         SLL   R1,27                   last byte contains length of
+         SRL   R1,26                   ..user data in halfwords
+         LA    R9,12(R1,R9)            add standard length + user
+       ENDDO
+     ENDIF
+   ENDDO
+*
+ERR      DS    0H
+DIREND   DS    0H
+*
+   CLOSE MEMLIST
+*
+ SEGE GET_DIRECTORY_DETAILS
+*______________________________________________________________________
+*
+ SEGS CHECK_AUTH
+*
+   MVI   IS_AUTH_READ,0                assume not authorised
+   MVC   TEST_VOL,IN_VOL
+   MVC   TEST_DSN,IN_DSN
+*
+C1 RACROUTE    REQUEST=AUTH,                                           /
+               ATTR=READ,                                              /
+               ENTITY=TEST_DSN,                                        /
+               VOLSER=TEST_VOL,                                        /
+               RELEASE=7720,                                           /
+               MSGSUPP=YES,                                            /
+               WORKA=SAFWORK2,                                         /
+               CLASS='DATASET',MF=S
+   IF (CFI,R15,EQ,0)
+     MVI   IS_AUTH_READ,C'Y'           authorised to read
+   ELSEIF (CFI,R15,EQ,4)               error in SAF
+     MVI   IS_AUTH_READ,C'Y'           assume not protected
+*    UNPK  CHAR_9A,C1+4(5)             copy return and reason codes
+*    UNPK  CHAR_9B,C1+8(5)
+   ENDIF
+*
+ SEGE CHECK_AUTH
+*______________________________________________________________________
+*
+ SEGS DYNALLOC_A
+*
+   MVI   DODYNVOL_ACTION,C'A'          dynamically allocate
+   MVC   DODYNVOL_VOLUME,IN_VOL
+   MVC   DODYNVOL_DDNAME,=CL8'PDS'
+   MVC   DODYNVOL_DATASET,IN_DSN
+   XC    DODYNVOL_MEMBER,DODYNVOL_MEMBER
+   LA    R1,DODYNVOL_PARM
+   ST    R1,MY_P_1
+   LA    R1,MY_PARM
+   L     R15,=V(DODYNVOL)
+   BASR  R14,R15
+   IF (CFI,R15,NE,0)
+     ST    R15,R_C
+     PRGQUIT
+   ENDIF
+*
+ SEGE DYNALLOC_A
+*______________________________________________________________________
+*
+ SEGS DYNALLOC_D
+*
+   MVI   DODYNVOL_ACTION,C'D'          dynamically de-allocate
+   LA    R1,DODYNVOL_PARM
+   ST    R1,MY_P_1
+   LA    R1,MY_PARM
+   L     R15,=V(DODYNVOL)
+   BASR  R14,R15
+   IF (LTR,R15,R15,NZ)
+     ST    R15,R_C
+     PRGQUIT
+   ENDIF
+*
+ SEGE DYNALLOC_D
+*______________________________________________________________________
+*
+ SEGS OUTPUT_VOLUME_TRAILER
+*
+   MVC   OUTPUT_REC+5(14),=C'Used tracks on'
+   MVC   OUTPUT_REC+20(6),LAST_VOLUME
+   MVC   ZD8,ED_PL8
+   ED    ZD8,VOLUME_TRACKS
+   MVC   OUTPUT_REC+27(10),ZD8+6
+   SEGDO PUT_VOLOUT
+   MVC   OUTPUT_REC+5(17),=C'Total files      '
+   MVC   ZD8,ED_PL8
+   ED    ZD8,VOLUME_FILES
+   MVC   OUTPUT_REC+27(10),ZD8+6
+   SEGDO PUT_VOLOUT
+   SEGDO PUT_VOLOUT
+   ZAP   VOLUME_TRACKS,=P'0'
+   ZAP   VOLUME_FILES,=P'0'
+*
+ SEGE OUTPUT_VOLUME_TRAILER
+*______________________________________________________________________
+*
+ SEGS OUTPUT_PROGRAM_TRAILER
+*
+   MVC   OUTPUT_REC+5(17),=C'Total used tracks'
+   MVC   ZD8,ED_PL8
+   ED    ZD8,TOTAL_TRACKS
+   MVC   OUTPUT_REC+27(L'ZD8),ZD8
+   SEGDO PUT_VOLOUT
+   MVC   OUTPUT_REC+5(17),=C'Total files      '
+   MVC   ZD8,ED_PL8
+   ED    ZD8,TOTAL_FILES
+   MVC   OUTPUT_REC+27(L'ZD8),ZD8
+   SEGDO PUT_VOLOUT
+   IF (CLI,DO_GROUPS,EQ,C'Y')
+     MVC   OUTPUT_REC+5(13),=C'Total volumes'
+     MVC   ZD8,ED_PL8
+     ED    ZD8,VOLUME_COUNT
+     MVC   OUTPUT_REC+27(L'ZD8),ZD8
+     SEGDO PUT_VOLOUT
+   ENDIF
+*
+ SEGE OUTPUT_PROGRAM_TRAILER
+*______________________________________________________________________
+*
+ PRGDCBI DCB=SYSIN,REC=SYSIN_REC,EOF=E_O_F
+*
+ PRGDCBI DCB=VOLIN,REC=INPUT_REC,EOF=E_O_F
+*
+ PRGDCBO DCB=SYSOUT,REC=SYSOUT_REC
+*
+ PRGDCBO DCB=VOLOUT,REC=OUTPUT_REC
+*______________________________________________________________________
+*
+         PRGSTAT
+*
+TST_ABND DS    0H
+         L     R2,0(,R1)               get completion code
+         N     R2,=A(X'FFF0FF00')      ensure nibles 4, 7 and 8 are 0
+*        IF (CL,R2,NE,=A(X'11304800')) is it IEC142I 113-48 abend
+*                                      meaning 28bit cylinder numbers
+*          MVI   4(R1),0               no, abnormally terminate
+*        ELSEIF (CL,R2,NE,=A(X'11304800')) is it IEC143I 213-04 abend
+*                                      meaning could not open numbers
+*          MVI   4(R1),0               no, abnormally terminate
+*        ELSE
+           MVI   3(R1),4               ignore the abend
+           MVI   ABEND_OPEN,C'Y'       set indicator
+           ST    R2,ABEND_REAS         save reason
+*        ENDIF
+         BR    R14
+*
+SYSIN    DCB   DSORG=PS,DDNAME=SYSIN,MACRF=(GM),EODAD=END_SYSIN
+VOLIN    DCB   DSORG=PS,DDNAME=VOLIN,MACRF=(GM),EODAD=END_VOLIN
+SYSOUT   DCB   DDNAME=SYSOUT,MACRF=(PM),DSORG=PS,RECFM=FB,LRECL=80
+VOLOUT   DCB   DDNAME=VOLOUT,MACRF=(PM),DSORG=PS,RECFM=FB,             /
+               LRECL=&OUT_REC_LEN
+MEMLIST  DCB   DDNAME=PDS,MACRF=(GL),DSORG=PS,EODAD=DIREND,            /
+               LRECL=256,BLKSIZE=256,RECFM=FB,EXLST=LIST1
+LIST1    DS    0F
+         DC    X'91',AL3(TST_ABND)     type 11 abend exit
+*
+COMP_DSN CLC   SEL_DSN_N(0),IN_DSN
+SPACES   DC    CL10' '
+ZEROES   DC    8CL1'0'
+INV_EXT  DC    C'EXT= must be specified like EXT=004'
+INV_TRK  DC    C'TRK= must be specified like TRK=00000123'
+INV_CAT  DC    C'CAT= must be specified like CAT=Y or CAT=N'
+INV_PER1 DC    C'PERCGE= must be specified like PERCGE=050'
+INV_PER2 DC    C'PERCEQ= must be specified like PERCEQ=050'
+INV_IN   DC    C'Invalid parm in SYSIN'
+INV_LREC DC    C'LRECL= must be specified like LRECL=00080'
+NOT_AUTH DC    C'Not authorised to read'
+OPN_FAIL DC    C'Open failed '
+CAT_YES  DC    C'Datasets must be catalogued'
+CAT_NO   DC    C'Datasets must NOT be catalogued'
+REC_FM   DC    C'Record format must be '
+CR_EATE  DC    C'Date created must be '
+EX_PIRE  DC    C'Expiry date must be '
+RE_FER   DC    C'Date referred must be '
+EX_INDEX DC    C'Exclude VTOC indexes'
+NOT_SORT DC    C'Input file VOLIN was not sorted on DSN ascending'
+HEAD_P1  DC    C'Cat        LRECL BLKSZ Ext   Tracks %use'
+HEAD_P2  DC    C'Create   Expire Referred'
+HEAD_P3  DC    C'Space tot-blk use-blk members aliases'
+ZD8      DS    CL16
+ED_PL8   DC    X'40202020202020202020202020202120'
+LOWVALS  DC    8XL1'00'
+HIGHVALS DC    8XL1'FF'
+TEST_VOL DS    CL6
+TEST_DSN DS    CL44
+VOLUME_COUNT   DC    PL8'0'
+VOLUME_TRACKS  DC    PL8'0'
+VOLUME_FILES   DC    PL8'0'
+TOTAL_TRACKS   DC    PL8'0'
+TOTAL_FILES    DC    PL8'0'
+TOTAL_UNIQUE   DC    PL8'0'
+TOTAL_CAT      DC    PL8'0'
+TOTAL_NOTCAT   DC    PL8'0'
+ZONE_DEC DC    CL8' '
+EDPAT    DC    X'4020202020202120'
+*______________________________________________________________________
+*
+         LTORG
+*
+NUM_TAB  DC    256X'FF'
+         ORG   NUM_TAB+C'0'
+         DC    10X'00'
+         ORG
+*
+SAFWORK2 DS    CL512
+*
+         DCBD  DSORG=QS,DEVD=DA
+*______________________________________________________________________
+*
+         PRGESTAT
+         PRGEND
+         END

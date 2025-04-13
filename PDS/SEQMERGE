@@ -1,0 +1,271 @@
+ TITLE 'SEQMERGE - MERGE SEQUENTIAL FILES TO ONE VB FILE'
+ PRINT GEN
+*______________________________________________________________________
+*
+SEQMERGE PRGDEF  FSEG=MAIN_PART,RMODE=24
+*
+*  This reads a list of datasets in SYSIN, each dataset is dynamically
+*  allocated to DATAIN the records copied to DATAOUT and then
+*  dynamically de-allocated.
+*  DATAOUT is REFCM=VB LRECL=32670.
+*  If the input file is FB the record is converted to VB.
+*  Each new file is preceded by a record in the form of IEBUPDTE
+*  where name is the original file name.
+*
+*  './ ADD NAME=original.data.set.name'
+*
+*  Alternatively if a newname for the dataset is specified in SYSIN
+*  begining in column 41 it is used instead.
+*
+*  ----+----1----+----2----+----3----+----4----+----5----+----6
+*  SDJRG.JCL(SEQMERG#)                     ASM-the-merge.txt
+*  SDJRG.JCL(SEQMERGE)                     run-the-merge.txt
+*
+*  A final alternative for longer file names is by specifiing a
+*  continuation character in column 72 and then on the next card
+*  the name to use on the PC.
+*  This processing is triggered by none blank in column 40 and
+*  none blank in column 72.
+*
+* ----+----1----+----2----+----3----+----4----+----5----+-     +----7--
+* SDJRG.VERY.VERY.LONG.DATASET.NAME.LIKE.THIS(NOTEMPTY)               /
+* a-very-long-filename-on-the-pc.txt
+*______________________________________________________________________
+*
+TOTAL_COUNT            DS    F         count of total records
+THIS_COUNT             DS    F         count of dataset records
+SYSOUT_REC             DS    CL80
+S_E_O_F                DS    C         end of file SYSIN
+D_E_O_F                DS    C         end of file DATAIN
+NEW_NAME               DS    CL68
+MVS_NAME               DS    CL68
+MVS_NAMEW              DS    CL68
+*
+SYSIN_REC              DS    CL80
+                       ORG   SYSIN_REC
+SYSIN_DDNAME           DS    CL40
+SYSIN_NEWNAME          DS    CL30
+                       ORG   SYSIN_NEWNAME-1
+SYSIN_LAST_BYTE        DS    CL1
+                       ORG   SYSIN_REC
+SYSIN_DDNAME_L         DS    CL44
+                       DS    CL27
+SYSIN_DDNAME_L_CONT    DS    CL1
+                       DS    CL8
+                       ORG   SYSIN_REC
+SYSIN_PCNAME_L         DS    CL60
+                       DS    CL20
+                       ORG
+*
+INPUT_PARM             DS    0D      parameter area for DODYNPRC
+INPUT_ACTION           DS    CL1
+INPUT_DDNAME           DS    CL8
+INPUT_DATASET          DS    CL44
+INPUT_MEMBER           DS    CL8
+*
+         USING IHADCB,DATAIN
+*
+         PRGEDEF
+*______________________________________________________________________
+*
+ SEGS MAIN_PART
+*
+   MVI   SYSOUT_REC,C' '
+   MVC   SYSOUT_REC+1(L'SYSOUT_REC-1),SYSOUT_REC
+*
+   SEGDO OPEN_SYSOUT
+   SEGDO OPEN_DATAOUT
+*
+   MVC   INPUT_DDNAME,=CL8'DATAIN'
+   SEGDO OPEN_SYSIN
+   DO INF
+     SEGDO GET_SYSIN
+   DOEXIT (CLI,S_E_O_F,EQ,C'Y')
+     IF (CLI,SYSIN_REC,NE,C'*')
+       XC    THIS_COUNT,THIS_COUNT
+       MVI   INPUT_ACTION,C'A'           dynamically allocate
+       MVC   INPUT_DATASET,SPACES
+       MVC   MVS_NAME,SPACES
+       MVC   NEW_NAME,SPACES
+       IF (CLI,SYSIN_LAST_BYTE,NE,C' '),AND,                           /
+               (CLI,SYSIN_DDNAME_L_CONT,NE,C' ')
+         MVC   MVS_NAME,SYSIN_DDNAME_L
+         MVC   INPUT_DATASET,SYSIN_DDNAME_L
+         SEGDO GET_SYSIN
+         IF (CLI,S_E_O_F,EQ,C'Y')
+           MVC   MESS_TXT(L'MISS_CONT1),MISS_CONT1
+           SEGDO WRITE_LOG
+           MVC   MESS_TXT(L'MISS_CONT2),MISS_CONT2
+           SEGDO WRITE_LOG
+           SEGDO CLOSE_SYSIN
+           PRGQUIT 16
+         ENDIF
+         MVC   NEW_NAME(L'SYSIN_PCNAME_L),SYSIN_PCNAME_L
+       ELSE
+         MVC   INPUT_DATASET(L'SYSIN_DDNAME),SYSIN_DDNAME
+         MVC   MVS_NAME(L'SYSIN_DDNAME),SYSIN_DDNAME
+         MVC   NEW_NAME(L'SYSIN_NEWNAME),SYSIN_NEWNAME
+       ENDIF
+       XC    INPUT_MEMBER,INPUT_MEMBER
+       SEGDO CHECK_FOR_MEMBER_NAME
+       LA    R1,INPUT_PARM
+       ST    R1,MY_P_1
+       LA    R1,MY_PARM
+       L     R15,=V(DODYNPRC)
+       BASR  R14,R15
+       IF (CFI,R15,NE,0)
+         ST    R15,R_C
+         PRGQUIT
+       ENDIF
+       SEGDO READ_AND_COPY_DATAIN
+       L     R1,THIS_COUNT               get this record count
+       CVD   R1,DOUB_WORD
+       MVC   SYSOUT_REC(L'EDPAT),EDPAT
+       ED    SYSOUT_REC(L'EDPAT),DOUB_WORD
+       MVC   SYSOUT_REC+L'EDPAT+2(L'MVS_NAME),MVS_NAME
+       SEGDO PUT_SYSOUT
+       MVI   INPUT_ACTION,C'D'           dynamically de-allocate
+       LA    R1,INPUT_PARM
+       ST    R1,MY_P_1
+       LA    R1,MY_PARM
+       L     R15,=V(DODYNPRC)
+       BASR  R14,R15
+     ENDIF
+   ENDDO
+   SEGDO CLOSE_SYSIN
+*
+   SEGDO CLOSE_DATAOUT
+   SEGDO PUT_SYSOUT                    output blank line
+   L     R1,TOTAL_COUNT                get total record count
+   CVD   R1,DOUB_WORD
+   MVC   SYSOUT_REC(L'EDPAT),EDPAT
+   ED    SYSOUT_REC(L'EDPAT),DOUB_WORD
+   SEGDO PUT_SYSOUT
+   SEGDO CLOSE_SYSOUT
+*
+ SEGE MAIN_PART
+*______________________________________________________________________
+*
+ SEGS READ_AND_COPY_DATAIN
+*
+   SEGDO OPEN_DATAIN
+   MVC   IEB_CARD_NAME,SPACES
+   IF (CLC,NEW_NAME,GT,SPACES)
+     MVC   IEB_CARD_NAME(L'NEW_NAME),NEW_NAME
+   ELSE
+     MVC   IEB_CARD_NAME(L'MVS_NAME),MVS_NAME
+   ENDIF
+   MVC   DATA_LEN(84),IEB_CARD_LEN
+   SEGDO PUT_DATAOUT                   write file header
+   DO INF
+     SEGDO GET_DATAIN                  rec address into R1
+   DOEXIT (CLI,D_E_O_F,EQ,C'Y')
+     LR    R6,R1                       copy record address
+     L     R1,TOTAL_COUNT
+     LA    R1,1(,R1)
+     ST    R1,TOTAL_COUNT              increment total record count
+     L     R1,THIS_COUNT
+     LA    R1,1(,R1)
+     ST    R1,THIS_COUNT               increment this record count
+     IF (TM,DCBRECFM,DCBRECV,NZ)       variable length
+       LH    R7,0(,R6)                 get record length
+       LA    R4,DATA_LEN               point to output area
+     ELSE
+       LH    R7,DCBLRECL               get fixed record length
+       LA    R1,4(,R7)                 add 4 as now variable
+       STH   R1,DATA_LEN               save in record length
+       LA    R4,DATA_TEXT              point to record text
+     ENDIF
+     LR    R5,R7                       copy length for move
+     MVCL  R4,R6                       copy from input to output
+     SEGDO PUT_DATAOUT                 write record
+   ENDDO
+   SEGDO CLOSE_DATAIN
+*
+ SEGE READ_AND_COPY_DATAIN
+*______________________________________________________________________
+*
+ SEGS CHECK_FOR_MEMBER_NAME
+*
+   MVC   MVS_NAMEW,MVS_NAME
+   LA    R14,MVS_NAMEW
+   LA    R15,L'MVS_NAMEW
+   XR    R1,R1
+   DO FROM=(R15)
+   DOEXIT (CLI,0(R14),EQ,C')')         end of member name
+     IF (CLI,0(R14),EQ,C'(')           start of member name
+       LR    R1,R14
+     ENDIF
+     LA    R14,1(,R14)
+   ENDDO
+   IF (CFI,R15,NE,0)
+     SR    R14,R1                      get length of member name
+     LA    R14,1(,R14)
+     LA    R15,INPUT_MEMBER
+     DO FROM=(R14)
+       IF (CLI,0(R1),EQ,C'(')
+         MVI   0(R1),C' '              blank byte in dataset name
+       ELSEIF (CLI,0(R1),EQ,C')')
+         MVI   0(R1),C' '              blank byte in dataset name
+       ELSE
+         MVC   0(1,R15),0(R1)          copy byte to member name
+         MVI   0(R1),C' '              blank byte in dataset name
+         LA    R15,1(,R15)
+       ENDIF
+       LA    R1,1(,R1)
+     ENDDO
+     MVC   INPUT_DATASET,MVS_NAMEW
+   ENDIF
+*
+ SEGE CHECK_FOR_MEMBER_NAME
+*______________________________________________________________________
+*
+ PRGDCBI DCB=SYSIN,REC=SYSIN_REC,EOF=S_E_O_F generate code for SYSIN
+*
+ PRGDCBI DCB=DATAIN,EOF=D_E_O_F              generate code for DATAIN
+*
+ PRGDCBO DCB=SYSOUT,REC=SYSOUT_REC           generate code for SYSOUT
+*
+ PRGDCBO DCB=DATAOUT,REC=DATA_RECORD,CLEAR=N generate code for DATAOUT
+*______________________________________________________________________
+*
+         PRGSTAT
+*
+IEB_CARD_LEN   DC    H'84'
+               DC    H'0'
+IEB_CARD_TEXT  DC    CL80'./ ADD NAME='
+               ORG   IEB_CARD_TEXT+12
+IEB_CARD_NAME  DC    CL68' '
+               ORG
+*
+EDPAT          DC    X'40202020202020202020202020202120'
+MISS_CONT1     DC    C'Continuation specified in column 72'
+MISS_CONT2     DC    C'Next record not found'
+*
+SYSOUT   DCB   DSORG=PS,DDNAME=SYSOUT,MACRF=(PM),RECFM=FB,LRECL=80
+*
+DATAOUT  DCB   DSORG=PS,DDNAME=DATAOUT,MACRF=(PM),RECFM=VB,LRECL=32700
+*
+SYSIN    DCB   DSORG=PS,DDNAME=SYSIN,MACRF=(GM),EODAD=END_SYSIN
+*
+DATAIN   DCB   DSORG=PS,DDNAME=DATAIN,MACRF=(GL),EODAD=END_DATAIN
+*
+SPACES   DC    CL80' '
+*
+         PUSH  PRINT,NOPRINT
+         PRINT NOGEN
+         DCBD  DSORG=QS,DEVD=DA
+         POP   PRINT,NOPRINT
+*
+SEQMERGE CSECT
+*
+         LTORG
+*
+DATA_RECORD    DS    0F
+DATA_LEN       DS    H
+               DS    H
+DATA_TEXT      DS    32760CL1
+*
+         PRGESTAT
+         PRGEND
+         END

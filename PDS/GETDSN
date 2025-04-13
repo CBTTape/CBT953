@@ -1,0 +1,68 @@
+ TITLE 'GETDSN - GET DSNAME FOR DDNAME'
+ PRINT GEN
+*
+GETDSN   PRGDEF FSEG=MAIN_BIT,RMODE=24,RENT=NO
+*______________________________________________________________________
+*
+*   GET THE DSNAME ASSOCIATED WITH INPUT DDNAME.
+*______________________________________________________________________
+*
+*
+*JRG  2021-01-04  GENESIS
+*______________________________________________________________________
+*
+         PRGEDEF
+*______________________________________________________________________
+*
+ SEGS MAIN_BIT
+*
+   USING IHADCB,TESTDCB
+   L     R3,0(,R1)                     GET PARAMETER ADDRESS
+   MVC   DCBDDNAM,0(R3)
+   L     R3,4(,R1)                     GET PARAMETER ADDRESS
+   SEGDO GET_DATASET_NAME
+   MVC   0(44,R3),THIS_DATASET
+*
+ SEGE MAIN_BIT
+*______________________________________________________________________
+*
+ SEGS GET_DATASET_NAME
+*
+   RDJFCB (TESTDCB)
+   IF (LTR,R15,R15,NZ)
+     PRGQUIT RC=16
+   ENDIF
+   MVC   THIS_DATASET,JFCBDSNM
+   IF (CLC,THIS_DATASET,LE,SPACES)
+     PRGQUIT RC=16
+   ENDIF
+*
+ SEGE GET_DATASET_NAME
+*______________________________________________________________________
+*
+         PRGSTAT
+*
+SPACES   DC          CL80' '
+*
+THIS_DATASET         DS    CL44
+*
+         LTORG
+*______________________________________________________________________
+*
+*GETDSN CSECT
+*______________________________________________________________________
+*
+*         A DCB USED TO CHECK WHAT SORT OF FILE IT IS
+TESTDCB  DCB   DDNAME=XXXX,MACRF=(GL),DSORG=PS,EXLST=LIST1
+LIST1    DS    0F
+         DC    X'87',AL3(MY_JFCB)
+*
+MY_JFCB  DS    0F
+*        IEFJFCBN LIST=YES
+         IEFJFCBN
+         DCBD     DSORG=QS,DEVD=DA
+*______________________________________________________________________
+*
+         PRGESTAT
+         PRGEND
+         END

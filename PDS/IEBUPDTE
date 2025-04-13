@@ -1,0 +1,53 @@
+# this is a perl script for use on your PC on a file created
+# using the program SEQMERGE
+# if you are on Windows I recommend Strawberry Perl as it installs
+# the GCC C compiler and linker as well
+#
+# CAUTION:-
+# I use code page 285 UK and see the US currency symbol for x'4A'
+# If this does not work change x'4A' to dollar in your code page
+# so file_open on line 27 should start with US currency symbol
+#
+# from_iebupdte_long_name.pl
+# Author:  John Gateley
+# Date:    2010-02-23
+# Amend:   2020-10-12 use longer file names
+# Amend:   2020-10-22 do not add the suffix
+#
+# This takes 1 argument of a file to read
+#
+# Each occurence of the
+# './ ADD NAME=' command causes a new file to be opened
+# to which the relevant details are written.
+#
+# perl.exe c:\perl\from_iebupdte_long_name.pl MAIN.FRAME.FILE
+
+use POSIX qw( strftime );
+use File::Path qw(make_path);
+use Cwd;
+
+¢file_open = 'N';
+
+¢myfile = shift(@ARGV);
+open(my ¢fh, '<', ¢myfile)
+       or die "Could not open file '¢myfile' ¢!";
+while (my ¢row = <¢fh>) {
+  chomp ¢row;
+  ¢pref_row = substr ¢row, 0, 12;
+  ¢out_name = substr(¢row, 12);
+  ¢out_name =¯ s/\s+¢//;
+  if (¢pref_row eq "./ ADD NAME=") {
+    if (¢file_open eq 'Y') {
+      close LOG;
+    }
+    open LOG, ">¢out_name";
+    ¢file_open = 'Y';
+    print "¢out_name\n";
+  } else {
+    print LOG "¢row\n";
+  }
+}
+if (¢file_open eq 'Y') {
+  close LOG;
+}
+exit 0;
